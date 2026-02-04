@@ -1,0 +1,409 @@
+[
+  {
+    "name": "base64",
+    "label": "base64",
+    "insertText": "base64",
+    "category": "string",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "length",
+    "label": "length",
+    "insertText": "length",
+    "category": "string",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "lower",
+    "label": "lower",
+    "insertText": "lower",
+    "category": "string",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "reverse",
+    "label": "reverse",
+    "insertText": "reverse",
+    "category": "string",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "smallcaps",
+    "label": "smallcaps",
+    "insertText": "smallcaps",
+    "category": "string",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "string",
+    "label": "string",
+    "insertText": "string",
+    "category": "string",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "title",
+    "label": "title",
+    "insertText": "title",
+    "category": "string",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "upper",
+    "label": "upper",
+    "insertText": "upper",
+    "category": "string",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "binary",
+    "label": "binary",
+    "insertText": "binary",
+    "category": "number",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "bitrate",
+    "label": "bitrate",
+    "insertText": "bitrate",
+    "category": "number",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "bytes",
+    "label": "bytes",
+    "insertText": "bytes",
+    "category": "number",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "bytes10",
+    "label": "bytes10",
+    "insertText": "bytes10",
+    "category": "number",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "bytes2",
+    "label": "bytes2",
+    "insertText": "bytes2",
+    "category": "number",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "comma",
+    "label": "comma",
+    "insertText": "comma",
+    "category": "number",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "hex",
+    "label": "hex",
+    "insertText": "hex",
+    "category": "number",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "octal",
+    "label": "octal",
+    "insertText": "octal",
+    "category": "number",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "rbitrate",
+    "label": "rbitrate",
+    "insertText": "rbitrate",
+    "category": "number",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "rbytes",
+    "label": "rbytes",
+    "insertText": "rbytes",
+    "category": "number",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "rbytes10",
+    "label": "rbytes10",
+    "insertText": "rbytes10",
+    "category": "number",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "rbytes2",
+    "label": "rbytes2",
+    "insertText": "rbytes2",
+    "category": "number",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "time",
+    "label": "time",
+    "insertText": "time",
+    "category": "number",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "first",
+    "label": "first",
+    "insertText": "first",
+    "category": "array",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "join",
+    "label": "join",
+    "insertText": "join('')",
+    "category": "array",
+    "hasConditionalBlock": false,
+    "isFunction": true,
+    "cursorOffset": 2
+  },
+  {
+    "name": "last",
+    "label": "last",
+    "insertText": "last",
+    "category": "array",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "lsort",
+    "label": "lsort",
+    "insertText": "lsort",
+    "category": "array",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "random",
+    "label": "random",
+    "insertText": "random",
+    "category": "array",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "rsort",
+    "label": "rsort",
+    "insertText": "rsort",
+    "category": "array",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "sort",
+    "label": "sort",
+    "insertText": "sort",
+    "category": "array",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "exists",
+    "label": "exists",
+    "insertText": "exists[\"\"||\"\"]",
+    "category": "boolean",
+    "hasConditionalBlock": true,
+    "isFunction": false,
+    "cursorOffset": 6
+  },
+  {
+    "name": "isfalse",
+    "label": "isfalse",
+    "insertText": "isfalse[\"\"||\"\"]",
+    "category": "boolean",
+    "hasConditionalBlock": true,
+    "isFunction": false,
+    "cursorOffset": 6
+  },
+  {
+    "name": "istrue",
+    "label": "istrue",
+    "insertText": "istrue[\"\"||\"\"]",
+    "category": "boolean",
+    "hasConditionalBlock": true,
+    "isFunction": false,
+    "cursorOffset": 6
+  },
+  {
+    "name": "^",
+    "label": "^",
+    "insertText": "^[\"\"||\"\"]",
+    "category": "comparison",
+    "hasConditionalBlock": true,
+    "isFunction": false,
+    "cursorOffset": 6
+  },
+  {
+    "name": "<",
+    "label": "<",
+    "insertText": "<[\"\"||\"\"]",
+    "category": "comparison",
+    "hasConditionalBlock": true,
+    "isFunction": false,
+    "cursorOffset": 6
+  },
+  {
+    "name": "<=",
+    "label": "<=",
+    "insertText": "<=[\"\"||\"\"]",
+    "category": "comparison",
+    "hasConditionalBlock": true,
+    "isFunction": false,
+    "cursorOffset": 6
+  },
+  {
+    "name": "=",
+    "label": "=",
+    "insertText": "=[\"\"||\"\"]",
+    "category": "comparison",
+    "hasConditionalBlock": true,
+    "isFunction": false,
+    "cursorOffset": 6
+  },
+  {
+    "name": ">",
+    "label": ">",
+    "insertText": ">[\"\"||\"\"]",
+    "category": "comparison",
+    "hasConditionalBlock": true,
+    "isFunction": false,
+    "cursorOffset": 6
+  },
+  {
+    "name": ">=",
+    "label": ">=",
+    "insertText": ">=[\"\"||\"\"]",
+    "category": "comparison",
+    "hasConditionalBlock": true,
+    "isFunction": false,
+    "cursorOffset": 6
+  },
+  {
+    "name": "~",
+    "label": "~",
+    "insertText": "~[\"\"||\"\"]",
+    "category": "comparison",
+    "hasConditionalBlock": true,
+    "isFunction": false,
+    "cursorOffset": 6
+  },
+  {
+    "name": "$",
+    "label": "$",
+    "insertText": "$[\"\"||\"\"]",
+    "category": "comparison",
+    "hasConditionalBlock": true,
+    "isFunction": false,
+    "cursorOffset": 6
+  },
+  {
+    "name": "and",
+    "label": "and",
+    "insertText": "and",
+    "category": "comparator",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "equal",
+    "label": "equal",
+    "insertText": "equal",
+    "category": "comparator",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "left",
+    "label": "left",
+    "insertText": "left",
+    "category": "comparator",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "neq",
+    "label": "neq",
+    "insertText": "neq",
+    "category": "comparator",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "or",
+    "label": "or",
+    "insertText": "or",
+    "category": "comparator",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "right",
+    "label": "right",
+    "insertText": "right",
+    "category": "comparator",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "xor",
+    "label": "xor",
+    "insertText": "xor",
+    "category": "comparator",
+    "hasConditionalBlock": false,
+    "isFunction": false
+  },
+  {
+    "name": "replace",
+    "label": "replace",
+    "insertText": "replace('', '')",
+    "category": "function",
+    "hasConditionalBlock": false,
+    "isFunction": true,
+    "cursorOffset": 6
+  },
+  {
+    "name": "slice",
+    "label": "slice",
+    "insertText": "slice()",
+    "category": "function",
+    "hasConditionalBlock": false,
+    "isFunction": true,
+    "cursorOffset": 1
+  },
+  {
+    "name": "truncate",
+    "label": "truncate",
+    "insertText": "truncate()",
+    "category": "function",
+    "hasConditionalBlock": false,
+    "isFunction": true,
+    "cursorOffset": 1
+  }
+]

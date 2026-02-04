@@ -1,30 +1,29 @@
 'use client';
 import { PageWrapper } from '../shared/page-wrapper';
 
-import * as constants from '../../../../core/src/utils/constants';
-import { ParsedStream } from '../../../../core/src/db/schemas';
-import React, { useState, useEffect, useCallback } from 'react';
+import { Modal } from '@/components/ui/modal';
 import { useUserData } from '@/context/userData';
+import { useDisclosure } from '@/hooks/disclosure';
+import { UserConfigAPI } from '@/services/api';
+import { copyToClipboard } from '@/utils/clipboard';
+import { CopyIcon } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { FaFileExport, FaFileImport } from 'react-icons/fa';
+import { toast } from 'sonner';
+import { ParsedStream } from '../../../../core/src/db/schemas';
+import FileParser from '../../../../core/src/parser/file';
+import * as constants from '../../../../core/src/utils/constants';
+import { SNIPPETS } from '../../../../core/src/utils/constants';
+import { ImportModal } from '../shared/import-modal';
+import { PageControls } from '../shared/page-controls';
 import { SettingsCard } from '../shared/settings-card';
-import { Textarea } from '../ui/textarea';
+import { Button, IconButton } from '../ui/button';
+import { NumberInput } from '../ui/number-input';
+import { SELAutocompleteInput } from '../ui/sel-autocomplete-input';
 import { Select } from '../ui/select';
 import { Switch } from '../ui/switch';
 import { TextInput } from '../ui/text-input';
-import FileParser from '../../../../core/src/parser/file';
-import { UserConfigAPI } from '@/services/api';
-import { SNIPPETS } from '../../../../core/src/utils/constants';
-import { Modal } from '@/components/ui/modal';
-import { useDisclosure } from '@/hooks/disclosure';
-import { Button } from '../ui/button';
-import { CopyIcon } from 'lucide-react';
-import { toast } from 'sonner';
-import { NumberInput } from '../ui/number-input';
-import { PageControls } from '../shared/page-controls';
 import { Tooltip } from '../ui/tooltip';
-import { FaFileImport, FaFileExport } from 'react-icons/fa';
-import { IconButton } from '../ui/button';
-import { ImportModal } from '../shared/import-modal';
-import { copyToClipboard } from '@/utils/clipboard';
 const formatterChoices = Object.values(constants.FORMATTER_DETAILS);
 
 // Remove the throttle utility and replace with FormatQueue
@@ -389,19 +388,20 @@ function Content() {
               <label className="text-sm font-medium mb-2 block">
                 Name Template
               </label>
-              <Textarea
+              <SELAutocompleteInput
                 value={userData.formatter.definition?.name || ''}
                 onValueChange={(value) =>
                   handleFormatterChange(constants.CUSTOM_FORMATTER, value)
                 }
                 placeholder="Enter a template for the stream name"
+                size="md"
               />
             </div>
             <div>
               <label className="text-sm font-medium mb-2 block">
                 Description Template
               </label>
-              <Textarea
+              <SELAutocompleteInput
                 value={userData.formatter.definition?.description || ''}
                 onValueChange={(value) =>
                   handleFormatterChange(
@@ -411,6 +411,7 @@ function Content() {
                   )
                 }
                 placeholder="Enter a template for the stream description"
+                size="md"
               />
             </div>
             <div className="flex gap-2 items-center">

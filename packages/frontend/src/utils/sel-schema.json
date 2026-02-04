@@ -1,0 +1,387 @@
+[
+  {
+    "name": "config",
+    "type": "object",
+    "path": "config",
+    "children": [
+      {
+        "name": "addonName",
+        "type": "string",
+        "path": "config.addonName"
+      }
+    ]
+  },
+  {
+    "name": "stream",
+    "type": "object",
+    "path": "stream",
+    "children": [
+      {
+        "name": "filename",
+        "type": "string",
+        "path": "stream.filename"
+      },
+      {
+        "name": "folderName",
+        "type": "string",
+        "path": "stream.folderName"
+      },
+      {
+        "name": "size",
+        "type": "number",
+        "path": "stream.size"
+      },
+      {
+        "name": "bitrate",
+        "type": "number",
+        "path": "stream.bitrate"
+      },
+      {
+        "name": "folderSize",
+        "type": "number",
+        "path": "stream.folderSize"
+      },
+      {
+        "name": "library",
+        "type": "boolean",
+        "path": "stream.library"
+      },
+      {
+        "name": "quality",
+        "type": "string",
+        "path": "stream.quality"
+      },
+      {
+        "name": "resolution",
+        "type": "string",
+        "path": "stream.resolution"
+      },
+      {
+        "name": "languages",
+        "type": "array",
+        "path": "stream.languages"
+      },
+      {
+        "name": "uLanguages",
+        "type": "array",
+        "path": "stream.uLanguages"
+      },
+      {
+        "name": "languageEmojis",
+        "type": "array",
+        "path": "stream.languageEmojis"
+      },
+      {
+        "name": "uLanguageEmojis",
+        "type": "array",
+        "path": "stream.uLanguageEmojis"
+      },
+      {
+        "name": "languageCodes",
+        "type": "array",
+        "path": "stream.languageCodes"
+      },
+      {
+        "name": "uLanguageCodes",
+        "type": "array",
+        "path": "stream.uLanguageCodes"
+      },
+      {
+        "name": "smallLanguageCodes",
+        "type": "array",
+        "path": "stream.smallLanguageCodes"
+      },
+      {
+        "name": "uSmallLanguageCodes",
+        "type": "array",
+        "path": "stream.uSmallLanguageCodes"
+      },
+      {
+        "name": "wedontknowwhatakilometeris",
+        "type": "array",
+        "path": "stream.wedontknowwhatakilometeris"
+      },
+      {
+        "name": "uWedontknowwhatakilometeris",
+        "type": "array",
+        "path": "stream.uWedontknowwhatakilometeris"
+      },
+      {
+        "name": "visualTags",
+        "type": "array",
+        "path": "stream.visualTags"
+      },
+      {
+        "name": "audioTags",
+        "type": "array",
+        "path": "stream.audioTags"
+      },
+      {
+        "name": "releaseGroup",
+        "type": "string",
+        "path": "stream.releaseGroup"
+      },
+      {
+        "name": "regexMatched",
+        "type": "string",
+        "path": "stream.regexMatched"
+      },
+      {
+        "name": "encode",
+        "type": "string",
+        "path": "stream.encode"
+      },
+      {
+        "name": "audioChannels",
+        "type": "array",
+        "path": "stream.audioChannels"
+      },
+      {
+        "name": "edition",
+        "type": "string",
+        "path": "stream.edition"
+      },
+      {
+        "name": "remastered",
+        "type": "boolean",
+        "path": "stream.remastered"
+      },
+      {
+        "name": "repack",
+        "type": "boolean",
+        "path": "stream.repack"
+      },
+      {
+        "name": "uncensored",
+        "type": "boolean",
+        "path": "stream.uncensored"
+      },
+      {
+        "name": "unrated",
+        "type": "boolean",
+        "path": "stream.unrated"
+      },
+      {
+        "name": "upscaled",
+        "type": "boolean",
+        "path": "stream.upscaled"
+      },
+      {
+        "name": "network",
+        "type": "string",
+        "path": "stream.network"
+      },
+      {
+        "name": "container",
+        "type": "string",
+        "path": "stream.container"
+      },
+      {
+        "name": "extension",
+        "type": "string",
+        "path": "stream.extension"
+      },
+      {
+        "name": "indexer",
+        "type": "string",
+        "path": "stream.indexer"
+      },
+      {
+        "name": "year",
+        "type": "string",
+        "path": "stream.year"
+      },
+      {
+        "name": "title",
+        "type": "string",
+        "path": "stream.title"
+      },
+      {
+        "name": "folderSeasons",
+        "type": "array",
+        "path": "stream.folderSeasons"
+      },
+      {
+        "name": "formattedFolderSeasons",
+        "type": "string",
+        "path": "stream.formattedFolderSeasons"
+      },
+      {
+        "name": "seasons",
+        "type": "array",
+        "path": "stream.seasons"
+      },
+      {
+        "name": "season",
+        "type": "number",
+        "path": "stream.season"
+      },
+      {
+        "name": "formattedSeasons",
+        "type": "string",
+        "path": "stream.formattedSeasons"
+      },
+      {
+        "name": "episodes",
+        "type": "array",
+        "path": "stream.episodes"
+      },
+      {
+        "name": "episode",
+        "type": "number",
+        "path": "stream.episode"
+      },
+      {
+        "name": "formattedEpisodes",
+        "type": "string",
+        "path": "stream.formattedEpisodes"
+      },
+      {
+        "name": "folderEpisodes",
+        "type": "array",
+        "path": "stream.folderEpisodes"
+      },
+      {
+        "name": "formattedFolderEpisodes",
+        "type": "string",
+        "path": "stream.formattedFolderEpisodes"
+      },
+      {
+        "name": "seasonEpisode",
+        "type": "array",
+        "path": "stream.seasonEpisode"
+      },
+      {
+        "name": "seasonPack",
+        "type": "boolean",
+        "path": "stream.seasonPack"
+      },
+      {
+        "name": "seeders",
+        "type": "number",
+        "path": "stream.seeders"
+      },
+      {
+        "name": "private",
+        "type": "boolean",
+        "path": "stream.private"
+      },
+      {
+        "name": "age",
+        "type": "string",
+        "path": "stream.age"
+      },
+      {
+        "name": "ageHours",
+        "type": "number",
+        "path": "stream.ageHours"
+      },
+      {
+        "name": "duration",
+        "type": "number",
+        "path": "stream.duration"
+      },
+      {
+        "name": "infoHash",
+        "type": "string",
+        "path": "stream.infoHash"
+      },
+      {
+        "name": "type",
+        "type": "string",
+        "path": "stream.type"
+      },
+      {
+        "name": "message",
+        "type": "string",
+        "path": "stream.message"
+      },
+      {
+        "name": "proxied",
+        "type": "boolean",
+        "path": "stream.proxied"
+      },
+      {
+        "name": "seadex",
+        "type": "boolean",
+        "path": "stream.seadex"
+      },
+      {
+        "name": "seadexBest",
+        "type": "boolean",
+        "path": "stream.seadexBest"
+      },
+      {
+        "name": "streamExpressionScore",
+        "type": "number",
+        "path": "stream.streamExpressionScore"
+      }
+    ]
+  },
+  {
+    "name": "service",
+    "type": "object",
+    "path": "service",
+    "children": [
+      {
+        "name": "id",
+        "type": "string",
+        "path": "service.id"
+      },
+      {
+        "name": "shortName",
+        "type": "string",
+        "path": "service.shortName"
+      },
+      {
+        "name": "name",
+        "type": "string",
+        "path": "service.name"
+      },
+      {
+        "name": "cached",
+        "type": "boolean",
+        "path": "service.cached"
+      }
+    ]
+  },
+  {
+    "name": "addon",
+    "type": "object",
+    "path": "addon",
+    "children": [
+      {
+        "name": "name",
+        "type": "string",
+        "path": "addon.name"
+      },
+      {
+        "name": "presetId",
+        "type": "string",
+        "path": "addon.presetId"
+      },
+      {
+        "name": "manifestUrl",
+        "type": "string",
+        "path": "addon.manifestUrl"
+      }
+    ]
+  },
+  {
+    "name": "debug",
+    "type": "object",
+    "path": "debug",
+    "children": [
+      {
+        "name": "json",
+        "type": "string",
+        "path": "debug.json"
+      },
+      {
+        "name": "jsonf",
+        "type": "string",
+        "path": "debug.jsonf"
+      }
+    ]
+  }
+]

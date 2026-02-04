@@ -9,6 +9,7 @@
     "release": "commit-and-tag-version",
     "format": "prettier --write \"**/*.{ts,tsx}\"",
     "metadata": "node scripts/generateMetadata.cjs",
+    "extract-sel-schema": "tsx scripts/extractSELSchema.ts",
     "build": "pnpm -F core run build && pnpm -F server run build && pnpm -F frontend run build",
     "build:watch": "tsc --build --watch",
     "start": "node packages/server/dist/server",
