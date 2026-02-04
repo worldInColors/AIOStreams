@@ -320,8 +320,15 @@ export function applySuggestion(
     }
   }
 
-  // If there's no closing brace and the property is a primitive, add one
-  if (!context.expression?.isClosed && suggestion.type !== 'object') {
+  // Check if we need to add a closing brace
+  const afterStartsWithQuote = after.startsWith('"') || after.startsWith("'");
+  const needsClosingBrace =
+    suggestion.type !== 'object' &&
+    (!context.expression?.isClosed ||
+      !after.startsWith('}') ||
+      afterStartsWithQuote);
+
+  if (needsClosingBrace) {
     insertText += '}';
     // Put cursor before the closing brace if we added it
     newCursorPosition = context.suggestionStartIndex + insertText.length - 1;

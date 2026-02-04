@@ -183,6 +183,124 @@ export function getCurrentContext(
   }
 
   // Check if we're after an operator
+  // first check if we're after a chaining operator (and, or). in that case, we're starting a new property
+  const andIndex = contentBeforeCursor.toLowerCase().lastIndexOf('::and::');
+  const orIndex = contentBeforeCursor.toLowerCase().lastIndexOf('::or::');
+  const lastChainingIndex = Math.max(andIndex, orIndex);
+
+  if (lastChainingIndex !== -1) {
+    // Determine which chaining operator and its length
+    const chainingOpLength = andIndex > orIndex ? 7 : 6; // '::and::' = 7, '::or::' = 6
+    const afterChaining = contentBeforeCursor.slice(
+      lastChainingIndex + chainingOpLength
+    );
+
+    // Check if there's another :: in the remaining text
+    const lastDoubleColon = afterChaining.lastIndexOf('::');
+    if (lastDoubleColon !== -1) {
+      const operatorPartial = afterChaining.slice(lastDoubleColon + 2);
+      const operatorStartIndex = cursorPosition - operatorPartial.length;
+
+      // Find where the operator ends
+      let operatorEndIndex = cursorPosition;
+      for (let i = cursorPosition; i < template.length; i++) {
+        const char = template[i];
+        if (
+          char === ':' ||
+          char === '[' ||
+          char === ']' ||
+          char === '}' ||
+          char === ' '
+        ) {
+          break;
+        }
+        if (/[a-zA-Z0-9=<>^$~()]/.test(char)) {
+          operatorEndIndex = i + 1;
+        } else {
+          break;
+        }
+      }
+
+      return {
+        inExpression: true,
+        inQuotedString: false,
+        currentPath: [],
+        currentPartial: '',
+        suggestionStartIndex: operatorStartIndex,
+        suggestionEndIndex: operatorEndIndex,
+        afterOperator: true,
+        currentOperator: operatorPartial,
+        operatorStartIndex,
+        operatorEndIndex,
+        expression: {
+          fullText: template.slice(
+            lastOpenBrace,
+            isClosed ? closingBrace + 1 : template.length
+          ),
+          content: template.slice(
+            lastOpenBrace + 1,
+            isClosed ? closingBrace : template.length
+          ),
+          startIndex: lastOpenBrace,
+          endIndex: isClosed ? closingBrace : template.length,
+          isClosed,
+        },
+      };
+    }
+
+    // No :: after chaining operator, so we're typing a new property path
+    const newPropertyPath = afterChaining;
+    const parts = newPropertyPath.split('.');
+    const currentPartial = parts.pop() || '';
+    const currentPath = parts;
+
+    const suggestionStartIndex = cursorPosition - currentPartial.length;
+
+    // Find where the current identifier ends
+    let suggestionEndIndex = cursorPosition;
+    for (let i = cursorPosition; i < template.length; i++) {
+      const char = template[i];
+      if (
+        char === '.' ||
+        char === ':' ||
+        char === '[' ||
+        char === ']' ||
+        char === '}' ||
+        char === ' '
+      ) {
+        break;
+      }
+      if (/[a-zA-Z0-9_]/.test(char)) {
+        suggestionEndIndex = i + 1;
+      } else {
+        break;
+      }
+    }
+
+    return {
+      inExpression: true,
+      inQuotedString: false,
+      currentPath,
+      currentPartial,
+      suggestionStartIndex,
+      suggestionEndIndex,
+      afterOperator: false,
+      expression: {
+        fullText: template.slice(
+          lastOpenBrace,
+          isClosed ? closingBrace + 1 : template.length
+        ),
+        content: template.slice(
+          lastOpenBrace + 1,
+          isClosed ? closingBrace : template.length
+        ),
+        startIndex: lastOpenBrace,
+        endIndex: isClosed ? closingBrace : template.length,
+        isClosed,
+      },
+    };
+  }
+
   const operatorMatch = contentBeforeCursor.match(/::([a-zA-Z0-9=<>^$~]*)$/);
   if (operatorMatch) {
     const operatorStartIndex = cursorPosition - operatorMatch[1].length;
