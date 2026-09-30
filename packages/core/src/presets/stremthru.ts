@@ -1,3 +1,4 @@
+import { QBITTORRENT_SERVICE } from '../utils/constants.js';
 import {
   Option,
   ParsedFile,
@@ -176,3 +177,12 @@ export class StremThruPreset extends Preset {
 
 export type StremThruServiceId =
   (typeof StremThruPreset.supportedServices)[number];
+
+/**
+ * Services the engine can resolve locally (the user's enabled services),
+ * not just the stores StremThru can proxy. Lazy to keep these imports out
+ * of module load.
+ */
+export function getInProcessTorrentServices(): ServiceId[] {
+  return [...StremThruPreset.supportedServices, QBITTORRENT_SERVICE];
+}

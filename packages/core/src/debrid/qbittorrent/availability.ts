@@ -30,6 +30,24 @@ export function applyPathMappings(
 export type AllowedPath = 'allowed' | 'missing' | 'invalid' | 'outside';
 
 /**
+ * Parse and validate the configured download roots. A root containing a
+ * comma cannot be expressed in this format, a relative root would resolve
+ * against the process working directory, and a filesystem-root root would
+ * confine nothing; all three invalidate the list. Shared by the feature
+ * gate (which needs "is the service offered at all") and the per-path
+ * check, so the two can never disagree.
+ */
+export function validQbittorrentRoots(): string[] {
+  return (process.env.QBITTORRENT_ALLOWED_ROOTS ?? '')
+    .split(',')
+    .map((root) => root.trim())
+    .filter(
+      (root) =>
+        root.startsWith('/') && root.replace(/\/+$/, '') !== '' && root !== '/'
+    );
+}
+
+/**
  * Open a path for reading, refusing anything that is not a regular file.
  * Non-blocking first, a fifo or device node would park a threadpool
  * thread forever.
@@ -80,13 +98,7 @@ export async function resolveAllowedPath(
   if (!stats) return { status: 'missing' };
   if (!stats.isFile()) return { status: 'invalid' };
 
-  const rawRoots = (process.env.QBITTORRENT_ALLOWED_ROOTS ?? '')
-    .split(',')
-    .map((root) => root.trim())
-    .filter(Boolean);
-  const validRoot = (root: string) =>
-    root.startsWith('/') && root.replace(/\/+$/, '') !== '' && root !== '/';
-  const roots = rawRoots.filter(validRoot);
+  const roots = validQbittorrentRoots();
 
   if (roots.length === 0) return { status: 'outside' };
   // Fold for case-insensitive platforms.

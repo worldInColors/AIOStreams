@@ -1,14 +1,7 @@
 ﻿import { Addon, Option, UserData } from '../db/index.js';
 import { appConfig, constants } from '../utils/index.js';
-import { StremThruPreset } from './stremthru.js';
+import { StremThruPreset, getInProcessTorrentServices } from './stremthru.js';
 
-// In-process builtin: the engine resolves its torrents against the
-// user's enabled services, so offer everything the engine supports
-// (including qBittorrent playback), not just the StremThru stores.
-const supportedServices: constants.ServiceId[] = [
-  ...StremThruPreset.supportedServices,
-  constants.QBITTORRENT_SERVICE,
-];
 import { TorznabPreset } from './torznab.js';
 
 export class BitmagnetPreset extends TorznabPreset {
@@ -61,7 +54,7 @@ export class BitmagnetPreset extends TorznabPreset {
         type: 'multi-select',
         required: false,
         showInSimpleMode: false,
-        options: supportedServices.map((service) => ({
+        options: getInProcessTorrentServices().map((service) => ({
           value: service,
           label: constants.SERVICE_DETAILS[service].name,
         })),
@@ -112,7 +105,7 @@ export class BitmagnetPreset extends TorznabPreset {
         appConfig.builtins.bitmagnet.timeout ??
         appConfig.presets.defaultTimeout,
       USER_AGENT: appConfig.http.defaultUserAgent,
-      SUPPORTED_SERVICES: supportedServices,
+      SUPPORTED_SERVICES: getInProcessTorrentServices(),
       DESCRIPTION:
         'An addon to get debrid results from Bitmagnet, a self-hosted BitTorrent indexer and DHT crawler.',
       OPTIONS: options,
