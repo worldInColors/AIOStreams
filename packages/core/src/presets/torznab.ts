@@ -1,7 +1,7 @@
 ﻿import { Addon, Option, Stream, UserData } from '../db/index.js';
 import { Preset, baseOptions } from './preset.js';
 import { appConfig, RESOURCES, ServiceId, constants } from '../utils/index.js';
-import { StremThruPreset } from './stremthru.js';
+import { StremThruPreset, getInProcessTorrentServices } from './stremthru.js';
 import { BuiltinAddonPreset } from './builtin.js';
 
 export class TorznabPreset extends BuiltinAddonPreset {
@@ -66,7 +66,7 @@ export class TorznabPreset extends BuiltinAddonPreset {
         type: 'multi-select',
         required: false,
         showInSimpleMode: false,
-        options: supportedServices.map((service) => ({
+        options: getInProcessTorrentServices().map((service) => ({
           value: service,
           label: constants.SERVICE_DETAILS[service].name,
         })),
@@ -181,7 +181,7 @@ export class TorznabPreset extends BuiltinAddonPreset {
       URL: [`${appConfig.bootstrap.internalUrl}/builtins/torznab`],
       TIMEOUT: appConfig.presets.defaultTimeout,
       USER_AGENT: appConfig.http.defaultUserAgent,
-      SUPPORTED_SERVICES: supportedServices,
+      SUPPORTED_SERVICES: getInProcessTorrentServices(),
       DESCRIPTION: 'An addon to get debrid results from a Torznab endpoint.',
       OPTIONS: options,
       SUPPORTED_STREAM_TYPES: [

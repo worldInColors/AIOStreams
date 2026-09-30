@@ -1,5 +1,6 @@
 import { config } from '../config/index.js';
 import { QBITTORRENT_SERVICE, StreamType } from './constants.js';
+import { validQbittorrentRoots } from '../debrid/qbittorrent/availability.js';
 
 const DEFAULT_REASON = 'Disabled by owner of the instance';
 
@@ -41,7 +42,7 @@ export class FeatureControl {
     // configured download roots the service stays hidden (and any
     // configuration using it is disabled) rather than failing open on
     // shared instances.
-    if (!process.env.QBITTORRENT_ALLOWED_ROOTS?.trim()) {
+    if (validQbittorrentRoots().length === 0) {
       if (!map.has(QBITTORRENT_SERVICE)) {
         map.set(
           QBITTORRENT_SERVICE,

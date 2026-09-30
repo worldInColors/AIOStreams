@@ -1,6 +1,6 @@
 ﻿import { Option, UserData } from '../db/index.js';
 import { appConfig, constants } from '../utils/index.js';
-import { StremThruPreset } from './stremthru.js';
+import { StremThruPreset, getInProcessTorrentServices } from './stremthru.js';
 import { TorznabPreset } from './torznab.js';
 
 export class SeaDexPreset extends TorznabPreset {
@@ -36,7 +36,7 @@ export class SeaDexPreset extends TorznabPreset {
         type: 'multi-select',
         required: false,
         showInSimpleMode: false,
-        options: StremThruPreset.supportedServices.map((service) => ({
+        options: getInProcessTorrentServices().map((service) => ({
           value: service,
           label: constants.SERVICE_DETAILS[service].name,
         })),
@@ -67,10 +67,7 @@ export class SeaDexPreset extends TorznabPreset {
       // internal URL and its torrents are resolved by the engine against the
       // user's enabled services (getTorrentServices), so the qBittorrent
       // playback service is offered here like on the other builtins.
-      SUPPORTED_SERVICES: [
-        ...StremThruPreset.supportedServices,
-        constants.QBITTORRENT_SERVICE,
-      ] as constants.ServiceId[],
+      SUPPORTED_SERVICES: getInProcessTorrentServices(),
       DESCRIPTION:
         'SeaDex is a curated database of the best anime releases. Get high-quality torrents for anime based on community recommendations.',
       OPTIONS: options,

@@ -723,7 +723,7 @@ describe('qbittorrent service availability', () => {
     delete process.env.QBITTORRENT_ALLOWED_ROOTS;
     try {
       assert.ok(
-        !FeatureControl.disabledServices.has('qbittorrent') === false,
+        FeatureControl.disabledServices.has('qbittorrent'),
         'qBittorrent is disabled without roots'
       );
       const details = getEnvironmentServiceDetails();
