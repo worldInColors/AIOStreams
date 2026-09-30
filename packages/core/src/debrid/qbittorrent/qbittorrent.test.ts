@@ -144,6 +144,22 @@ describe('stream tokens', () => {
     assert.deepEqual(entry?.credential, credential);
     assert.equal(entry?.filePath, '/data/pack/s01e02.mkv');
     assert.equal(entry?.fileSize, 12345);
+    // The common live configuration: no optional fields set at all.
+    const bare = parseQbittorrentCredential(
+      toUrlSafeBase64(
+        JSON.stringify({ url: WEBUI, username: 'u', password: 'p' })
+      )
+    );
+    const bareRef = await registerStreamRef({
+      credential: bare,
+      hash: 'b'.repeat(40),
+      fileIndex: 0,
+      filePath: '/x/a.mkv',
+      fileSize: 1,
+      filename: 'a.mkv',
+      addedAt: 1,
+    });
+    assert.ok(await resolveStreamRef(bareRef), 'bare credential round-trips');
   });
 });
 
@@ -900,6 +916,12 @@ describe('QBittorrentService resolve', () => {
       /\/s01e02\.mkv$/,
       'the url ends with the file name players sniff the format from'
     );
+    // The token segment must round-trip through a real URL: base64 contains
+    // path-unsafe characters that would otherwise truncate it at the router.
+    const tokenInUrl = link!.split('/stream/')[1].split('/')[0];
+    assert.ok(!/[+/]/.test(tokenInUrl), 'token carries no raw path-unsafe characters');
+    const decoded = decodeQbittorrentStreamToken(decodeURIComponent(tokenInUrl));
+    assert.ok(decoded && decoded.exp > 0, 'the url token decodes to a valid stream token');
     assert.equal(prioBodies.length, 2);
     assert.ok(
       prioBodies.some((body) => /id=1/.test(body) && /priority=7/.test(body))

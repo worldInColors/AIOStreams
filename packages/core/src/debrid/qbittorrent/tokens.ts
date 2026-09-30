@@ -1,7 +1,9 @@
 import { randomUUID } from 'crypto';
 import z from 'zod';
-import { Cache, decryptString, encryptString } from '../../utils/index.js';
+import { createLogger, decryptString, encryptString } from '../../utils/index.js';
 import { QbittorrentCredentialSchema } from './client.js';
+
+const logger = createLogger('debrid:qbittorrent');
 
 /** How long a stream reference stays resolvable after a resolve. */
 export const STREAM_REF_TTL_SECONDS = 12 * 60 * 60;
@@ -27,11 +29,20 @@ export interface QbittorrentStreamRefEntry {
  * Server-side store for stream references. Tokens carry only an opaque
  * reference (plus expiry), so a leaked or tampered stream URL can neither
  * disclose the WebUI credential nor reach a path that was not registered by
- * a resolve.
+ * a resolve. Kept in-process on purpose: references are minted and served by
+ * the same instance, and this keeps their lifecycle independent of whatever
+ * cache backend (and its write buffering) the operator configured. A
+ * restart simply expires every outstanding link; players replay to refresh.
  */
-const streamRefStore = Cache.getInstance<string, string>(
-  'qbittorrent:stream-refs'
-);
+const streamRefs = new Map<string, { sealed: string; expiresAt: number }>();
+const MAX_STREAM_REFS = 10_000;
+const refSweeper = setInterval(() => {
+  const now = Date.now();
+  for (const [ref, entry] of streamRefs) {
+    if (entry.expiresAt <= now) streamRefs.delete(ref);
+  }
+}, 60_000);
+refSweeper.unref();
 
 /**
  * Register a stream entry behind a fresh opaque reference for
@@ -48,7 +59,14 @@ export async function registerStreamRef(
   if (!sealed.success) {
     throw new Error('failed to seal qbittorrent stream reference');
   }
-  await streamRefStore.set(ref, sealed.data, STREAM_REF_TTL_SECONDS);
+  if (streamRefs.size >= MAX_STREAM_REFS) {
+    const oldest = streamRefs.keys().next().value;
+    if (oldest !== undefined) streamRefs.delete(oldest);
+  }
+  streamRefs.set(ref, {
+    sealed: sealed.data,
+    expiresAt: Date.now() + STREAM_REF_TTL_SECONDS * 1000,
+  });
   return ref;
 }
 
@@ -66,10 +84,9 @@ const SealedCredentialSchema = z.object({
   // The credential is stored POST-transform (skipOtherFiles already a
   // boolean, pathMappings already parsed into pairs), so the entry schema
   // mirrors the output shape rather than re-running the input transforms.
-  pathMappings: z.union([
-    z.array(z.object({ from: z.string(), to: z.string() })),
-    z.undefined(),
-  ]),
+  pathMappings: z
+    .array(z.object({ from: z.string(), to: z.string() }))
+    .optional(),
 });
 
 const SealedStreamRefSchema = z.object({
@@ -85,8 +102,12 @@ const SealedStreamRefSchema = z.object({
 export async function resolveStreamRef(
   ref: string
 ): Promise<QbittorrentStreamRefEntry | undefined> {
-  const sealed = await streamRefStore.get(ref);
-  if (!sealed) return undefined;
+  const stored = streamRefs.get(ref);
+  if (!stored || stored.expiresAt <= Date.now()) {
+    if (stored) streamRefs.delete(ref);
+    return undefined;
+  }
+  const sealed = stored.sealed;
   const opened = decryptString(sealed);
   if (!opened.success || opened.data == null) return undefined;
   try {
