@@ -343,9 +343,10 @@ export class QBittorrentService implements TorrentDebridService {
       exp: Math.floor(Date.now() / 1000) + STREAM_REF_TTL_SECONDS,
     });
 
-    return `${appConfig.bootstrap.baseUrl}/api/v1/qbittorrent/stream/${token}/${encodeURIComponent(
-      displayName
-    )}`;
+
+    return `${appConfig.bootstrap.baseUrl}/api/v1/qbittorrent/stream/${encodeURIComponent(
+      token
+    )}/${encodeURIComponent(displayName)}`;
   }
 
   private async waitForTorrent(

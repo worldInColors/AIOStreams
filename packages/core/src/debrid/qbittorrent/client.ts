@@ -36,7 +36,6 @@ export const QbittorrentCredentialSchema = z.object({
    */
   pathMappings: z
     .string()
-    .optional()
     .transform((value) =>
       value
         ? (value
@@ -54,7 +53,8 @@ export const QbittorrentCredentialSchema = z.object({
             })
             .filter((pair): pair is { from: string; to: string } => !!pair))
         : undefined
-    ),
+    )
+    .optional(),
 });
 
 export type QbittorrentCredential = z.infer<typeof QbittorrentCredentialSchema>;
