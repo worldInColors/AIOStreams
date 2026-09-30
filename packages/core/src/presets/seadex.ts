@@ -63,7 +63,14 @@ export class SeaDexPreset extends TorznabPreset {
       URL: [`${appConfig.bootstrap.internalUrl}/builtins/seadex`],
       TIMEOUT: appConfig.presets.defaultTimeout,
       USER_AGENT: appConfig.http.defaultUserAgent,
-      SUPPORTED_SERVICES: StremThruPreset.supportedServices,
+      // SeaDex is hosted in-process: its manifest is served from the
+      // internal URL and its torrents are resolved by the engine against the
+      // user's enabled services (getTorrentServices), so the qBittorrent
+      // playback service is offered here like on the other builtins.
+      SUPPORTED_SERVICES: [
+        ...StremThruPreset.supportedServices,
+        constants.QBITTORRENT_SERVICE,
+      ] as constants.ServiceId[],
       DESCRIPTION:
         'SeaDex is a curated database of the best anime releases. Get high-quality torrents for anime based on community recommendations.',
       OPTIONS: options,
