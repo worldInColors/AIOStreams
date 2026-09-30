@@ -1,6 +1,14 @@
 ﻿import { Option, UserData } from '../db/index.js';
 import { appConfig, constants } from '../utils/index.js';
 import { StremThruPreset } from './stremthru.js';
+
+// In-process builtin: the engine resolves its torrents against the
+// user's enabled services, so offer everything the engine supports
+// (including qBittorrent playback), not just the StremThru stores.
+const supportedServices: constants.ServiceId[] = [
+  ...StremThruPreset.supportedServices,
+  constants.QBITTORRENT_SERVICE,
+];
 import { TorznabPreset } from './torznab.js';
 
 export class TorrentGalaxyPreset extends TorznabPreset {
@@ -38,7 +46,7 @@ export class TorrentGalaxyPreset extends TorznabPreset {
         type: 'multi-select',
         required: false,
         showInSimpleMode: false,
-        options: StremThruPreset.supportedServices.map((service) => ({
+        options: supportedServices.map((service) => ({
           value: service,
           label: constants.SERVICE_DETAILS[service].name,
         })),
@@ -89,7 +97,7 @@ export class TorrentGalaxyPreset extends TorznabPreset {
         appConfig.builtins.torrentGalaxy.defaultTimeout ??
         appConfig.presets.defaultTimeout,
       USER_AGENT: appConfig.http.defaultUserAgent,
-      SUPPORTED_SERVICES: StremThruPreset.supportedServices,
+      SUPPORTED_SERVICES: supportedServices,
       DESCRIPTION: 'An addon to get debrid results from TorrentGalaxy.',
       OPTIONS: options,
       SUPPORTED_STREAM_TYPES: [constants.DEBRID_STREAM_TYPE],

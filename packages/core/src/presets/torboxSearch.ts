@@ -14,9 +14,17 @@ import { StreamParser } from '../parser/index.js';
 import { BuiltinAddonPreset, BuiltinStreamParser } from './builtin.js';
 import { StremThruPreset } from './stremthru.js';
 
+// In-process builtin: the engine resolves its torrents against the
+// user's enabled services, so offer everything the engine supports
+// (including qBittorrent playback), not just the StremThru stores.
+const supportedServices: constants.ServiceId[] = [
+  ...StremThruPreset.supportedServices,
+  constants.QBITTORRENT_SERVICE,
+];
+
 export class TorBoxSearchPreset extends BuiltinAddonPreset {
   public static readonly supportedServices: ServiceId[] =
-    StremThruPreset.supportedServices;
+    supportedServices;
 
   static override getParser(): typeof StreamParser {
     return BuiltinStreamParser;
