@@ -300,8 +300,10 @@ export class QBittorrentService implements TorrentDebridService {
         await addTorrent(playbackInfo.downloadUrl);
       } else {
         let magnet = `magnet:?xt=urn:btih:${hash}`;
-        if (playbackInfo.filename) {
-          magnet += `&dn=${encodeURIComponent(playbackInfo.filename)}`;
+
+        const displayName = playbackInfo.filename ?? playbackInfo.title;
+        if (displayName) {
+          magnet += `&dn=${encodeURIComponent(displayName)}`;
         }
         if (playbackInfo.sources.length > 0) {
           magnet += `&tr=${playbackInfo.sources
