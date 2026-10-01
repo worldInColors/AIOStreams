@@ -910,6 +910,50 @@ describe('QBittorrentService resolve', () => {
     assert.equal(prioBodies.length, 0);
   });
 
+  test('selects versioned episode files in folder packs', async (t) => {
+    // qBittorrent reports folder-prefixed paths; "01v2" in a full path loses
+    // its episode number in the title parser, so selection must see base names.
+    const hash = hashOf('7');
+    const dir = mkdtempSync(join(tmpdir(), 'aiostreams-qbit-'));
+    // deriveFilePath treats content_path === save_path with a shared first
+    // name segment as a stripped root, so the files live directly in the dir.
+    writeFileSync(join(dir, '[Group] Show - 01v2 (BD 1080p) [ABCDEF01].mkv'), Buffer.alloc(1000, 1));
+    writeFileSync(join(dir, '[Group] Show - 02v2 (BD 1080p) [ABCDEF02].mkv'), Buffer.alloc(1000, 1));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const contentPath = dir;
+    const prioBodies: string[] = [];
+    await withMockedWebUi(t, {
+      login: true,
+      onFilePrio: (body) => prioBodies.push(body),
+      intercepts: dataIntercepts(
+        hash,
+        {
+          ...torrentFixture(hash, 'downloading'),
+          content_path: contentPath,
+          save_path: contentPath,
+          tags: QBITTORRENT_TAG,
+        },
+        [
+          {
+            ...fileFixture(0, 'Show S1/[Group] Show - 01v2 (BD 1080p) [ABCDEF01].mkv', 1000),
+            piece_range: [0, 3],
+          },
+          {
+            ...fileFixture(1, 'Show S1/[Group] Show - 02v2 (BD 1080p) [ABCDEF02].mkv', 1000),
+            piece_range: [4, 7],
+          },
+        ],
+        [2, 2, 2, 2, 2, 2, 2, 2]
+      ),
+    });
+    const link = await serviceWithSkip().resolve(playback(hash, 1), '[Group] Show - 02v2.mkv', true);
+    assert.match(link ?? '', /s01e02|02v2/, 'a file was selected and resolved');
+    assert.ok(
+      prioBodies.some((body) => /id=1/.test(body) && /priority=7/.test(body)),
+      'the versioned episode 02v2 was raised'
+    );
+  });
+
   test('skips other files and raises the selected one when opted in', async (t) => {
     const hash = hashOf('5');
     const contentPath = makeContent(t, [
