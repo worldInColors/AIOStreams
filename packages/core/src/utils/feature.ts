@@ -1,6 +1,6 @@
 import { config } from '../config/index.js';
 import { QBITTORRENT_SERVICE, StreamType } from './constants.js';
-import { validQbittorrentRoots } from '../debrid/qbittorrent/availability.js';
+import { validQbittorrentRoots } from '../debrid/qbittorrent/roots.js';
 
 const DEFAULT_REASON = 'Disabled by owner of the instance';
 
@@ -37,11 +37,9 @@ export class FeatureControl {
 
   public static get disabledServices(): Map<string, string> {
     const map = parseReasonMap(config.userLimits.disabled.services);
-    // qBittorrent playback can only work when the operator shares a
-    // filesystem with the client, so it is operator-opt-in: without
-    // configured download roots the service stays hidden (and any
-    // configuration using it is disabled) rather than failing open on
-    // shared instances.
+    // qBittorrent playback needs the operator to share a filesystem with
+    // the client, so without configured download roots the service stays
+    // hidden rather than failing open on shared instances.
     if (validQbittorrentRoots().length === 0) {
       if (!map.has(QBITTORRENT_SERVICE)) {
         map.set(
