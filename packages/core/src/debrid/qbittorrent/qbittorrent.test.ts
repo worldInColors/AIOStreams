@@ -145,7 +145,7 @@ describe('stream tokens', () => {
     assert.deepEqual(entry?.credential, credential);
     assert.equal(entry?.filePath, '/data/pack/s01e02.mkv');
     assert.equal(entry?.fileSize, 12345);
-    // The common live configuration: no optional fields set at all.
+    // The common live configuration, no optional fields set at all.
     const bare = parseQbittorrentCredential(
       toUrlSafeBase64(
         JSON.stringify({ url: WEBUI, username: 'u', password: 'p' })
@@ -446,7 +446,7 @@ describe('PieceReadiness', () => {
       pieceSize: 250,
       isReadable: readiness.readable,
     });
-    // Piece 1 re-appeared in the same observation; not readable yet.
+    // Piece 1 re-appeared in the same observation, not readable yet.
     assert.equal(availability.readableFrom(0), 250);
   });
 });
@@ -471,7 +471,7 @@ describe('computeFileAvailability', () => {
   });
 
   test('serves a range only when all its pieces are downloaded', () => {
-    // Piece 4 missing: global [1000, 1250) = file bytes [500, 750).
+    // Piece 4 missing, global [1000, 1250) = file bytes [500, 750).
     const availability = computeFileAvailability({
       files,
       fileIndex: 1,
@@ -547,7 +547,7 @@ describe('computeFileAvailability', () => {
   test('corrects offsets when pad files are hidden from the list', () => {
     // True layout: file 0 = [0, 500) (pieces 0-1), a hidden 250-byte pad file
     // = [500, 750) (piece 2), file 1 = [750, 1750) (pieces 3-6). The files
-    // list omits the pad file, so summed offsets land one piece short; the
+    // list omits the pad file, so summed offsets land one piece short, the
     // file's own piece range pins the true offset.
     const withPad = [
       file({ index: 0, name: 'first.bin', size: 500, piece_range: [0, 1], progress: 1 }),
@@ -559,7 +559,7 @@ describe('computeFileAvailability', () => {
       pieceStates: [2, 2, 2, 2, 0, 0, 0],
       pieceSize: 250,
     });
-    // File 1 starts at global 750 (piece 3); its first 250 bytes are in
+    // File 1 starts at global 750 (piece 3), its first 250 bytes are in
     // piece 3 = global [750, 1000).
     assert.equal(availability.contiguousFrom(0), 250);
     assert.equal(availability.rangeAvailable(0, 250), true);
@@ -658,7 +658,7 @@ describe('QBittorrentService', () => {
     assert.equal(errored.status, 'failed');
     assert.equal(absent.status, 'unknown');
     assert.equal(absent.library, false);
-    // Present but incomplete: playable only after more download.
+    // Present but incomplete, playable only after more download.
     assert.equal(downloading.status, 'downloading');
     assert.equal(downloading.library, true);
   });
@@ -771,11 +771,16 @@ describe('qbittorrent service availability', () => {
 });
 
 describe('QBittorrentService resolve', () => {
-  // The confinement check fails closed without configured roots; these
+  // The confinement check fails closed without configured roots, these
   // tests build their content under the system temp directory.
   const previousRoots = process.env.QBITTORRENT_ALLOWED_ROOTS;
+  const previousFetcher = process.env.AIOSTREAMS_QBIT_HEAD_FETCHER;
   before(() => {
     process.env.QBITTORRENT_ALLOWED_ROOTS = tmpdir();
+    // Resolve tests must not spawn real head fetchers, point the override
+    // at a binary that fails instantly so the magnet-first and fallback
+    // paths both bail into the mocked WebUI flow.
+    process.env.AIOSTREAMS_QBIT_HEAD_FETCHER = '/bin/false';
   });
   after(() => {
     if (previousRoots === undefined) {
@@ -783,9 +788,14 @@ describe('QBittorrentService resolve', () => {
     } else {
       process.env.QBITTORRENT_ALLOWED_ROOTS = previousRoots;
     }
+    if (previousFetcher === undefined) {
+      delete process.env.AIOSTREAMS_QBIT_HEAD_FETCHER;
+    } else {
+      process.env.AIOSTREAMS_QBIT_HEAD_FETCHER = previousFetcher;
+    }
   });
 
-  // One unique infohash per test: the live-file registry is module-global
+  // One unique infohash per test, the live-file registry is module-global
   // with a 15-minute TTL, so reusing a hash would leak liveness between
   // tests (and correctly suppress skips of a "live" file).
   const hashOf = (char: string) => char.repeat(40);
@@ -797,7 +807,7 @@ describe('QBittorrentService resolve', () => {
   /**
    * A directory on the real filesystem holding one non-zero file per entry,
    * so the resolve wait's flushed-to-disk check passes. For a single file
-   * the torrent's content_path is the file itself; for several it is the
+   * the torrent's content_path is the file itself, for several it is the
    * directory.
    */
   function makeContent(
@@ -911,7 +921,7 @@ describe('QBittorrentService resolve', () => {
   });
 
   test('selects versioned episode files in folder packs', async (t) => {
-    // qBittorrent reports folder-prefixed paths; "01v2" in a full path loses
+    // qBittorrent reports folder-prefixed paths, "01v2" in a full path loses
     // its episode number in the title parser, so selection must see base names.
     const hash = hashOf('7');
     const dir = mkdtempSync(join(tmpdir(), 'aiostreams-qbit-'));

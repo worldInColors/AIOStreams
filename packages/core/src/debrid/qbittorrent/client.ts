@@ -1,4 +1,5 @@
 import z from 'zod';
+import { readFile } from 'node:fs/promises';
 import { DebridError } from '../base.js';
 import {
   createLogger,
@@ -75,13 +76,7 @@ export function parseQbittorrentCredential(
   try {
     raw = JSON.parse(fromUrlSafeBase64(token));
   } catch {
-    throw new DebridError('Invalid qBittorrent credential', {
-      statusCode: 400,
-      statusText: 'Bad Request',
-      code: 'BAD_REQUEST',
-      type: 'api_error',
-      headers: {},
-    });
+    throw qbError('BAD_REQUEST', 'Invalid qBittorrent credential');
   }
   const parsed = QbittorrentCredentialSchema.safeParse(raw);
   if (!parsed.success) {
@@ -129,6 +124,48 @@ export type QbittorrentFile = z.infer<typeof QbittorrentFileSchema>;
 
 const QbittorrentPropertiesSchema = z.object({
   piece_size: z.number(),
+});
+
+/** HTTP shape for every qBittorrent failure AIOStreams raises. */
+const ERROR_KINDS = {
+  BAD_REQUEST: [400, 'Bad Request', 'api_error'],
+  UNAUTHORIZED: [401, 'Unauthorized', 'api_error'],
+  FORBIDDEN: [403, 'Forbidden', 'api_error'],
+  NOT_FOUND: [404, 'Not Found', 'api_error'],
+  TIMEOUT: [408, 'Request Timeout', 'api_error'],
+  GONE: [410, 'Gone', 'api_error'],
+  BAD_GATEWAY: [502, 'Bad Gateway', 'upstream_error'],
+  SERVICE_UNAVAILABLE: [503, 'Service Unavailable', 'api_error'],
+  STORE_MAGNET_INVALID: [400, 'Bad Request', 'store_error'],
+  NO_MATCHING_FILE: [400, 'Bad Request', 'api_error'],
+} as const;
+
+/** Construct the DebridError every call site in this module raises. */
+export function qbError(
+  code: keyof typeof ERROR_KINDS,
+  message: string,
+  body?: unknown
+): DebridError {
+  const [statusCode, statusText, type] = ERROR_KINDS[code];
+  return new DebridError(message, {
+    statusCode,
+    statusText,
+    code,
+    type,
+    headers: {},
+    body,
+  });
+}
+
+/**
+ * Module level on purpose, a client is created per stream open and an
+ * instance cache would never hit.
+ */
+const pieceSizes = new Map<string, number>();
+
+const QbittorrentPreferencesSchema = z.object({
+  listen_port: z.number(),
+  current_interface_address: z.string().optional(),
 });
 
 interface Session {
@@ -195,8 +232,6 @@ function unauthorized(message: string): DebridError {
  * without one.
  */
 export class QBittorrentClient {
-
-  private readonly pieceSizes = new Map<string, number>();
 
   constructor(private readonly credential: QbittorrentCredential) {}
 
@@ -305,7 +340,8 @@ export class QBittorrentClient {
     path: string,
     options: {
       method?: string;
-      body?: URLSearchParams;
+      // Form data for the file-upload add, URL-encoded for everything else.
+      body?: URLSearchParams | FormData;
       signal?: AbortSignal;
     } = {}
   ): Promise<Response> {
@@ -316,7 +352,10 @@ export class QBittorrentClient {
       if (session && session.sid) {
         headers.cookie = `${session.cookieName}=${session.sid}`;
       }
-      if (options.body !== undefined) {
+      // FormData carries its own multipart content type, the URL-encoded
+      // header would break the boundary.
+      const isFormData = options.body instanceof FormData;
+      if (options.body !== undefined && !isFormData) {
         headers['content-type'] = 'application/x-www-form-urlencoded';
       }
       return makeRequest(`${this.baseUrl()}${path}`, {
@@ -328,7 +367,8 @@ export class QBittorrentClient {
           ? AbortSignal.any([options.signal, AbortSignal.timeout(30_000)])
           : undefined,
         headers,
-        body: options.body?.toString(),
+        // The global FormData and undici-types FormData differ in type only.
+        body: (isFormData ? options.body : options.body?.toString()) as unknown as never,
         ignoreRecursion: true,
       });
     };
@@ -472,15 +512,40 @@ export class QBittorrentClient {
 
   /** Piece size is immutable per torrent, fetch it once per hash. */
   async getPieceSize(hash: string, signal?: AbortSignal): Promise<number> {
-    const cached = this.pieceSizes.get(hash);
+    const cached = pieceSizes.get(hash);
     if (cached !== undefined) return cached;
     const properties = await this.requestJson(
       QbittorrentPropertiesSchema,
       `/api/v2/torrents/properties?hash=${encodeURIComponent(hash)}`,
       { signal }
     );
-    this.pieceSizes.set(hash, properties.piece_size);
+    pieceSizes.set(hash, properties.piece_size);
     return properties.piece_size;
+  }
+
+  /**
+   * The address qBittorrent's listener is reachable on, an interface-bound
+   * client has no loopback listener so the head fetcher dials that address.
+   */
+  async getPeerEndpoint(
+    signal?: AbortSignal
+  ): Promise<{ host: string; port: number } | undefined> {
+    try {
+      const prefs = await this.requestJson(
+        QbittorrentPreferencesSchema,
+        '/api/v2/app/preferences',
+        { signal }
+      );
+      if (prefs.listen_port <= 0) return undefined;
+      return {
+        host: prefs.current_interface_address?.trim() || '127.0.0.1',
+        port: prefs.listen_port,
+      };
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      logger.debug({ err: error }, 'could not read qbittorrent listen endpoint');
+      return undefined;
+    }
   }
 
   async getPieceStates(
@@ -532,13 +597,7 @@ export class QBittorrentClient {
       signal,
     });
     if (response.status === 415) {
-      throw new DebridError('qBittorrent rejected the torrent', {
-        statusCode: 400,
-        statusText: 'Bad Request',
-        code: 'STORE_MAGNET_INVALID',
-        type: 'store_error',
-        headers: {},
-      });
+      throw qbError('STORE_MAGNET_INVALID', 'qBittorrent rejected the torrent');
     }
     const body = await response.text();
     if (!response.ok) {
@@ -554,14 +613,125 @@ export class QBittorrentClient {
     // "Fails." body. The caller distinguishes duplicates by looking the
     // torrent up.
     if (body.includes('Fails.')) {
-      throw new DebridError('qBittorrent rejected the torrent', {
-        statusCode: 400,
-        statusText: 'Bad Request',
-        code: 'STORE_MAGNET_INVALID',
-        type: 'store_error',
-        headers: {},
-      });
+      throw qbError('STORE_MAGNET_INVALID', 'qBittorrent rejected the torrent');
     }
+  }
+
+  /**
+   * Add a .torrent from disk, the head-sidecar flow uses this once the
+   * fetcher already has the metadata so qBittorrent skips its magnet wait.
+   */
+  async addTorrentFile(path: string, signal?: AbortSignal): Promise<boolean> {
+    try {
+      const data = await readFile(path);
+      const form = new FormData();
+      form.append(
+        'torrents',
+        new Blob([new Uint8Array(data)], { type: 'application/x-bittorrent' }),
+        'head.torrent'
+      );
+      form.append('tags', QBITTORRENT_TAG);
+      form.append('sequentialDownload', 'true');
+      form.append('firstLastPiecePrio', 'true');
+      const response = await this.request('/api/v2/torrents/add', {
+        method: 'POST',
+        body: form,
+        signal,
+      });
+      // Drain the body so the connection is released.
+      await response.body?.cancel().catch(() => {});
+      return response.ok || response.status === 409;
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      logger.debug({ path, err: error }, 'could not add torrent file');
+      return false;
+    }
+  }
+
+  /** Stop a torrent, paired with start to free the remote per-IP peer slots. */
+  async stopTorrent(hash: string, signal?: AbortSignal): Promise<boolean> {
+    return this.postFirstSupported(
+      ['/api/v2/torrents/stop', '/api/v2/torrents/pause'],
+      { hashes: hash },
+      signal
+    );
+  }
+
+  /** Resume a stopped torrent, 5 renamed `resume` to `start`, fall back for 4.x. */
+  async startTorrent(hash: string, signal?: AbortSignal): Promise<boolean> {
+    return this.postFirstSupported(
+      ['/api/v2/torrents/start', '/api/v2/torrents/resume'],
+      { hashes: hash },
+      signal
+    );
+  }
+
+
+  /** The raw .torrent file bytes, for seeding out-of-band fetchers. */
+  async exportTorrent(
+    hash: string,
+    signal?: AbortSignal
+  ): Promise<Uint8Array | undefined> {
+    try {
+      const res = await this.request(
+        `/api/v2/torrents/export?hash=${encodeURIComponent(hash)}`,
+        { signal }
+      );
+      if (!res.ok) return undefined;
+      return new Uint8Array(await res.arrayBuffer());
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Status-only POST, returns the status code or undefined on a transport
+   * error the caller did not cause.
+   */
+  private async postStatus(
+    path: string,
+    params: Record<string, string>,
+    signal?: AbortSignal
+  ): Promise<number | undefined> {
+    try {
+      const response = await this.request(path, {
+        method: 'POST',
+        body: new URLSearchParams(params),
+        signal,
+      });
+      await response.body?.cancel().catch(() => {});
+      return response.status;
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      logger.debug({ path, err: error }, 'qbittorrent call failed');
+      return undefined;
+    }
+  }
+
+  /** Try each endpoint in order, 2xx is done, 404 means try the older name. */
+  private async postFirstSupported(
+    paths: string[],
+    params: Record<string, string>,
+    signal?: AbortSignal
+  ): Promise<boolean> {
+    for (const path of paths) {
+      const status = await this.postStatus(path, params, signal);
+      if (status === undefined) return false;
+      if (status < 300) return true;
+      if (status !== 404) return false;
+    }
+    return false;
+  }
+
+  /** Re-announce right away, the regular schedule leaves a restarted torrent
+   * peerless for a while. */
+  async reannounce(hash: string, signal?: AbortSignal): Promise<boolean> {
+    const status = await this.postStatus(
+      '/api/v2/torrents/reannounce',
+      { hashes: hash },
+      signal
+    );
+    return status !== undefined && status < 300;
   }
 
   /**
@@ -575,63 +745,11 @@ export class QBittorrentClient {
     signal?: AbortSignal
   ): Promise<boolean> {
     if (ids.length === 0) return true;
-    let response: Response;
-    try {
-      response = await this.request('/api/v2/torrents/filePrio', {
-        method: 'POST',
-        body: new URLSearchParams({
-          hash,
-          id: ids.join('|'),
-          priority: String(priority),
-        }),
-        signal,
-      });
-    } catch (error) {
-      if (signal?.aborted) throw error;
-      logger.debug(
-        { hash, priority, count: ids.length, err: error },
-        'could not set file priorities'
-      );
-      return false;
-    }
-    if (!response.ok) {
-      logger.debug(
-        { hash, priority, count: ids.length, status: response.status },
-        'could not set file priorities'
-      );
-    }
-      // Drain the body so the connection is released.
-    await response.body?.cancel().catch(() => {});
-    return response.ok;
-  }
-
-  /** Resume a stopped torrent, 5 renamed `resume` to `start`, fall back for 4.x. */
-  async startTorrent(hash: string, signal?: AbortSignal): Promise<boolean> {
-    for (const path of ['/api/v2/torrents/start', '/api/v2/torrents/resume']) {
-      let response: Response;
-      try {
-        response = await this.request(path, {
-          method: 'POST',
-          body: new URLSearchParams({ hashes: hash }),
-          signal,
-        });
-      } catch (error) {
-        if (signal?.aborted) throw error;
-        logger.debug({ hash, path, err: error }, 'could not start torrent');
-        return false;
-      }
-      // Drain the body so the connection is released.
-      await response.body?.cancel().catch(() => {});
-      if (response.ok) return true;
-      // Only 4.x lacks `start` (404); anything else is a real failure.
-      if (response.status !== 404) {
-        logger.debug(
-          { hash, path, status: response.status },
-          'could not start torrent'
-        );
-        return false;
-      }
-    }
-    return false;
+    const status = await this.postStatus(
+      '/api/v2/torrents/filePrio',
+      { hashes: hash, id: ids.join('|'), priority: String(priority) },
+      signal
+    );
+    return status !== undefined && status < 300;
   }
 }
