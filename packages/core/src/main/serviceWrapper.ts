@@ -599,29 +599,31 @@ async function buildDebridStreams(
  */
 export function getServiceCredential(service: {
   id: string;
-  credentials?: Record<string, string>;
+  credentials?: Record<string, string | boolean | null>;
 }): string | undefined {
   const creds = service.credentials;
   if (!creds) return undefined;
+  const str = (value: string | boolean | null | undefined) =>
+    typeof value === 'string' ? value : undefined;
 
   // Only need to handle torrent-based services.
   switch (service.id) {
     case constants.SEEDR_SERVICE:
-      return creds.encodedToken;
+      return str(creds.encodedToken);
     case constants.PIKPAK_SERVICE:
       return JSON.stringify({
-        email: creds.email,
-        password: creds.password,
+        email: str(creds.email),
+        password: str(creds.password),
       });
     case constants.QBITTORRENT_SERVICE:
       return encodeQbittorrentCredential({
-        url: creds.url,
-        username: creds.username,
-        password: creds.password,
+        url: str(creds.url) ?? '',
+        username: str(creds.username) ?? '',
+        password: str(creds.password) ?? '',
         skipOtherFiles: creds.skipOtherFiles,
-        pathMappings: creds.pathMappings,
+        pathMappings: str(creds.pathMappings),
       });
     default:
-      return creds.apiKey;
+      return str(creds.apiKey);
   }
 }

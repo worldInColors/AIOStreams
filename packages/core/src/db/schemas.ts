@@ -323,7 +323,10 @@ const BitrateFilterOptions = z.object({
 const ServiceSchema = z.object({
   id: ServiceIds,
   enabled: z.boolean().optional(),
-  credentials: z.record(z.string().min(1), z.string()),
+  credentials: z.record(
+    z.string().min(1),
+    z.union([z.string(), z.boolean(), z.null()])
+  ),
 });
 
 export type Service = z.infer<typeof ServiceSchema>;
