@@ -565,6 +565,8 @@ export class QBittorrentService implements TorrentDebridService {
           logger.debug(
             {
               hash: torrent.hash,
+              state: current.state,
+              downloaded: Math.round(current.progress * current.size),
               contiguous: availability.contiguousFrom(0),
               threshold,
               flushed,
