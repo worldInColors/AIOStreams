@@ -677,9 +677,11 @@ export class QBittorrentService implements TorrentDebridService {
       name: torrent.name,
       size: torrent.size,
       status: 'downloading',
+      // The title parser misreads "01v2" in folder-prefixed paths, so
+      // selection sees base names and the index maps back to the real file.
       files: files.map((file) => ({
         id: file.index,
-        name: file.name,
+        name: file.name.split('/').pop() ?? file.name,
         size: file.size,
         index: file.index,
       })),
