@@ -29,6 +29,37 @@ export function applyPathMappings(
 
 export type AllowedPath = 'allowed' | 'missing' | 'invalid' | 'outside';
 
+/** Scan forward until the first all-zero 64KiB chunk, that's where
+ * written data ends in a pre-allocated file. Compressed video never
+ * has an all-zero chunk, so this is reliable. */
+export async function diskContiguousBytes(
+  filePath: string,
+  from: number,
+  limit: number
+): Promise<number> {
+  const CHUNK = 64 * 1024;
+  const handle = await openRegularFile(filePath);
+  if (!handle) return 0;
+  try {
+    const stats = await handle.stat();
+    const end = Math.min(from + limit, stats.size);
+    const buffer = Buffer.alloc(CHUNK);
+    let cursor = from;
+    while (cursor < end) {
+      const length = Math.min(CHUNK, end - cursor);
+      const { bytesRead } = await handle.read(buffer, 0, length, cursor);
+      if (bytesRead === 0) break;
+      if (!buffer.subarray(0, bytesRead).some((byte) => byte !== 0)) break;
+      cursor += bytesRead;
+    }
+    return cursor - from;
+  } catch {
+    return 0;
+  } finally {
+    await handle.close().catch(() => {});
+  }
+}
+
 /**
  * Parse and validate the configured download roots. A root containing a
  * comma cannot be expressed in this format, a relative root would resolve
