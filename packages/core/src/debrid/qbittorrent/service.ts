@@ -1,4 +1,9 @@
 import { open } from 'fs/promises';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
   DebridDownload,
@@ -24,6 +29,8 @@ import {
 } from '../../utils/index.js';
 import {
   FILE_PRIORITY,
+  qbError,
+  QBITTORRENT_TAG,
   isOwnTorrent,
   QBittorrentClient,
   QbittorrentCredential,
@@ -40,6 +47,13 @@ import {
   planFilePriorities,
   resolveAllowedPath,
 } from './availability.js';
+import {
+  getHeadSidecar,
+  headFetcherAvailable,
+  headSidecarDir,
+  registerHeadSidecar,
+  singleflightHeadFetch,
+} from './head-sidecar.js';
 import {
   STREAM_REF_TTL_SECONDS,
   encodeQbittorrentStreamToken,
@@ -74,10 +88,44 @@ function hashFromMagnet(magnet: string): string | undefined {
   return MAGNET_HASH.exec(magnet)?.[1]?.toLowerCase();
 }
 
+function buildMagnet(
+  playbackInfo: PlaybackInfo & { type: 'torrent' },
+  hash: string
+): string {
+  let magnet = `magnet:?xt=urn:btih:${hash}`;
+
+  const displayName = playbackInfo.filename ?? playbackInfo.title;
+  if (displayName) {
+    magnet += `&dn=${encodeURIComponent(displayName)}`;
+  }
+  if (playbackInfo.sources.length > 0) {
+    magnet += `&tr=${playbackInfo.sources
+      .map((source) => encodeURIComponent(source))
+      .join('&tr=')}`;
+  }
+  return magnet;
+}
+
 function downloadStatus(torrent: QbittorrentTorrent): DebridDownload['status'] {
   if (FAILED_STATES.has(torrent.state)) return 'failed';
   if (SEEDED_STATES.has(torrent.state) || torrent.progress >= 1) return 'downloaded';
   return 'downloading';
+}
+
+/** The one torrent-to-download mapping every list/get/check shares. */
+function toDownload(
+  torrent: QbittorrentTorrent,
+  status: DebridDownload['status']
+): DebridDownload {
+  return {
+    id: torrent.hash,
+    hash: torrent.hash,
+    name: torrent.name,
+    size: torrent.size ?? 0,
+    addedAt: new Date(torrent.added_on * 1000).toISOString(),
+    status,
+    library: true,
+  };
 }
 
 /** Resolves torrents through the user's own qBittorrent client. */
@@ -119,16 +167,11 @@ export class QBittorrentService implements TorrentDebridService {
       const failed = FAILED_STATES.has(torrent.state);
       const complete =
         SEEDED_STATES.has(torrent.state) || torrent.progress >= 1;
-      const download: DebridDownload = {
-        id: torrent.hash,
-        hash: torrent.hash,
-        name: torrent.name,
-        size: torrent.size,
-        addedAt: new Date(torrent.added_on * 1000).toISOString(),
 
-        status: failed ? 'failed' : complete ? 'cached' : 'downloading',
-        library: true,
-      };
+      const download: DebridDownload = toDownload(
+        torrent,
+        failed ? 'failed' : complete ? 'cached' : 'downloading'
+      );
       result.push(download);
       if (!failed && foundWithFiles.length < 25) {
         foundWithFiles.push({ download, hash: torrent.hash });
@@ -159,15 +202,9 @@ export class QBittorrentService implements TorrentDebridService {
 
   async listMagnets(): Promise<DebridDownload[]> {
     const torrents = await this.client.getTaggedTorrents();
-    return torrents.map((torrent) => ({
-      id: torrent.hash,
-      hash: torrent.hash,
-      name: torrent.name,
-      size: torrent.size,
-      addedAt: new Date(torrent.added_on * 1000).toISOString(),
-      status: downloadStatus(torrent),
-      library: true,
-    }));
+    return torrents.map((torrent) =>
+      toDownload(torrent, downloadStatus(torrent))
+    );
   }
 
   async addMagnet(magnet: string): Promise<DebridDownload> {
@@ -196,13 +233,7 @@ export class QBittorrentService implements TorrentDebridService {
     }
     const files = await this.client.getFiles(magnetId);
     return {
-      id: torrent.hash,
-      hash: torrent.hash,
-      name: torrent.name,
-      size: torrent.size,
-      addedAt: new Date(torrent.added_on * 1000).toISOString(),
-      status: downloadStatus(torrent),
-      library: true,
+      ...toDownload(torrent, downloadStatus(torrent)),
       files: files.map((file) => ({
         id: file.index,
         name: file.name,
@@ -235,13 +266,7 @@ export class QBittorrentService implements TorrentDebridService {
     signal?: AbortSignal
   ): Promise<string | undefined> {
     if (playbackInfo.type !== 'torrent') {
-      throw new DebridError('qBittorrent can only resolve torrents', {
-        statusCode: 400,
-        statusText: 'Bad Request',
-        code: 'BAD_REQUEST',
-        type: 'api_error',
-        headers: {},
-      });
+      throw qbError('BAD_REQUEST', 'qBittorrent can only resolve torrents');
     }
     if (autoRemoveDownloads) {
       logger.debug(
@@ -269,10 +294,42 @@ export class QBittorrentService implements TorrentDebridService {
 
     await DebridFailureCache.check(this.serviceName, 'torrent', hash);
 
+    let freshAdd = false;
+    let magnetFirstAttempted = false;
     let torrent =
       (playbackInfo.serviceItemId
         ? await this.client.getTorrent(playbackInfo.serviceItemId.toLowerCase())
         : undefined) ?? (await this.client.getTorrent(hash));
+
+    if (
+      !torrent &&
+      cacheAndPlay &&
+      // Magnet-first never touches private torrents, DHT-announcing a
+      // private infohash breaks tracker rules and the metadata never arrives
+      // without the passkey announce anyway. Anything with a downloadUrl
+      // takes that branch below instead.
+      playbackInfo.private !== true &&
+      !(
+        playbackInfo.downloadUrl &&
+        appConfig.builtins.debrid.useTorrentDownloadUrl
+      ) &&
+      (await headFetcherAvailable())
+    ) {
+      // The sidecar fetcher resolves the metadata itself (the slowest part
+      // of a cold play on weak swarms) and writes the .torrent back, so
+      // qBittorrent starts with metadata and is never stopped.
+      magnetFirstAttempted = true;
+      const fetchedTorrent = await this.fetchHeadFromMagnet(
+        playbackInfo,
+        hash,
+        deadline,
+        signal
+      );
+      if (fetchedTorrent && (await this.client.addTorrentFile(fetchedTorrent, signal))) {
+        torrent = await this.waitForTorrent(hash, signal, deadline);
+        freshAdd = true;
+      }
+    }
 
     if (!torrent) {
       const addTorrent = async (url: string) => {
@@ -300,22 +357,12 @@ export class QBittorrentService implements TorrentDebridService {
         );
         await addTorrent(playbackInfo.downloadUrl);
       } else {
-        let magnet = `magnet:?xt=urn:btih:${hash}`;
-
-        const displayName = playbackInfo.filename ?? playbackInfo.title;
-        if (displayName) {
-          magnet += `&dn=${encodeURIComponent(displayName)}`;
-        }
-        if (playbackInfo.sources.length > 0) {
-          magnet += `&tr=${playbackInfo.sources
-            .map((source) => encodeURIComponent(source))
-            .join('&tr=')}`;
-        }
-        await addTorrent(magnet);
+        await addTorrent(buildMagnet(playbackInfo, hash));
       }
 
       if (!cacheAndPlay) return undefined;
       torrent = await this.waitForTorrent(hash, signal, deadline);
+      freshAdd = true;
     }
 
 
@@ -324,7 +371,10 @@ export class QBittorrentService implements TorrentDebridService {
       playbackInfo,
       cacheAndPlay,
       signal,
-      deadline
+      deadline,
+      // A failed magnet-first attempt already spent its fetch budget, no
+      // second fetcher on top.
+      freshAdd && !magnetFirstAttempted
     );
     if (!readiness) return undefined;
     const { file, filePath } = readiness;
@@ -334,7 +384,7 @@ export class QBittorrentService implements TorrentDebridService {
     const displayName = file.name.split('/').pop() || filename || file.name;
 
     const token = encodeQbittorrentStreamToken({
-      ref: await registerStreamRef({
+      ref: registerStreamRef({
         credential: this.credential,
         hash: torrent.hash,
         fileIndex: file.index,
@@ -365,13 +415,7 @@ export class QBittorrentService implements TorrentDebridService {
         () => {}
       );
     }
-    throw new DebridError('Timed out waiting for qBittorrent to accept the torrent', {
-      statusCode: 408,
-      statusText: 'Request Timeout',
-      code: 'TIMEOUT',
-      type: 'api_error',
-      headers: {},
-    });
+    throw qbError('TIMEOUT', 'Timed out waiting for qBittorrent to accept the torrent');
   }
 
   /** Wait until the selected file has a playable prefix. */
@@ -380,7 +424,8 @@ export class QBittorrentService implements TorrentDebridService {
     playbackInfo: PlaybackInfo & TorrentInfo,
     cacheAndPlay: boolean,
     signal: AbortSignal | undefined,
-    deadline: number
+    deadline: number,
+    fetchHead = false
   ): Promise<
     | {
         file: { index: number; name: string; size: number };
@@ -392,6 +437,7 @@ export class QBittorrentService implements TorrentDebridService {
     let priorityFailures = 0;
     let prioritiesAbandoned = false;
     let resumeAttempted = false;
+    let headFetched = false;
     let torrentMisses = 0;
     let lastState = torrent.state;
     let attempt = 0;
@@ -520,6 +566,15 @@ export class QBittorrentService implements TorrentDebridService {
               }
             );
           }
+          // A sidecar for this file makes the head playable regardless of
+          // qBittorrent's own progress.
+          const sidecar = getHeadSidecar(torrent.hash, file.index, file.size);
+          if (
+            sidecar &&
+            sidecar.bytes >= Math.min(file.size, STREAM_THRESHOLD_BYTES)
+          ) {
+            return { file, filePath };
+          }
           // Just pre-allocation lag, nothing flushed yet.
           const pieceSize = await this.client.getPieceSize(torrent.hash, signal);
           const pieceStates = await this.client.getPieceStates(torrent.hash, signal);
@@ -535,6 +590,30 @@ export class QBittorrentService implements TorrentDebridService {
             availability.contiguousFrom(0) >= threshold;
           // Piece states flip before flush, verify bytes are readable.
           const flushed = await this.hasFlushedHead(filePath, file.size);
+          // The export-mode fetch announces the torrent from a second
+          // peer, never do that for private torrents (whitelists and
+          // double-announce rules punish exactly that).
+          if (
+            !dataReady &&
+            !flushed &&
+            fetchHead &&
+            !headFetched &&
+            playbackInfo.private !== true &&
+            (await headFetcherAvailable())
+          ) {
+            headFetched = true;
+            // One fetcher per torrent+file, two concurrent resolves of the
+            // same pack must not race each other's qBittorrent stop/start.
+            const fetched = await singleflightHeadFetch(
+              `${torrent.hash}:${file.index}`,
+              () => this.fetchHeadPieces(current, files, file.index, signal)
+            );
+            if (fetched) {
+              // The sidecar serves the verified head directly, qBittorrent's
+              // own copy follows in the background.
+              return { file, filePath };
+            }
+          }
           if (!dataReady && flushed) {
             // pieceStates lags on busy clients, trust the bytes.
             dataReady =
@@ -655,8 +734,8 @@ export class QBittorrentService implements TorrentDebridService {
   }
 
   private async selectFile(
-    torrent: QbittorrentTorrent,
-    files: Awaited<ReturnType<QBittorrentClient['getFiles']>>,
+    torrent: { hash: string; name: string; size?: number },
+    files: readonly { index: number; name: string; size: number }[],
     playbackInfo: PlaybackInfo & TorrentInfo
   ): Promise<{ index: number; name: string; size: number } | undefined> {
     if (playbackInfo.fileIndex !== undefined) {
@@ -667,7 +746,7 @@ export class QBittorrentService implements TorrentDebridService {
       title: torrent.name || playbackInfo.title || '',
       type: 'torrent',
       hash: torrent.hash,
-      size: torrent.size,
+      size: torrent.size ?? 0,
       sources: playbackInfo.sources,
       private: playbackInfo.private,
     };
@@ -675,7 +754,7 @@ export class QBittorrentService implements TorrentDebridService {
       id: torrent.hash,
       hash: torrent.hash,
       name: torrent.name,
-      size: torrent.size,
+      size: torrent.size ?? 0,
       status: 'downloading',
       // The title parser misreads "01v2" in folder-prefixed paths, so
       // selection sees base names and the index maps back to the real file.
@@ -701,6 +780,401 @@ export class QBittorrentService implements TorrentDebridService {
     );
     if (selected?.index === undefined) return undefined;
     return files.find((file) => file.index === selected.index);
+  }
+
+  /**
+   * Head fetch for a torrent qBittorrent does not have yet, the fetcher
+   * resolves the metadata, we pick the file over stdin, and the .torrent it
+   * writes back is added to qBittorrent with metadata in place. Returns
+   * that path, or undefined to fall back to a plain magnet add.
+   */
+  private async fetchHeadFromMagnet(
+    playbackInfo: PlaybackInfo & { type: 'torrent' },
+    hash: string,
+    deadline: number,
+    signal?: AbortSignal
+  ): Promise<string | undefined> {
+    if (!/^[a-f0-9]{40}$|^[a-f0-9]{64}$/.test(hash)) return undefined;
+    return singleflightHeadFetch(`magnet:${hash}`, async () => {
+      const saveDir = headSidecarDir(hash);
+      if (!saveDir) return undefined;
+      const scriptPath =
+        process.env.AIOSTREAMS_QBIT_HEAD_FETCHER ||
+        fileURLToPath(new URL('head-fetcher.py', import.meta.url));
+      const endpoint = await this.client
+        .getPeerEndpoint(signal)
+        .catch(() => undefined);
+      // The fetcher shares the resolve's wall-clock budget rather than a
+      // fixed allowance, so a slow add cannot push the total past it.
+      const budgetMs = Math.max(5_000, Math.min(40_000, deadline - Date.now()));
+      let child: ReturnType<typeof spawn>;
+      try {
+        child = spawn('python3', [
+          scriptPath,
+          buildMagnet(playbackInfo, hash),
+          '',
+          '0',
+          String(Math.round(budgetMs / 1000)),
+          endpoint ? `${endpoint.host}:${endpoint.port}` : '',
+          saveDir,
+        ]);
+      } catch (error) {
+        logger.debug({ err: error, hash }, 'head fetcher spawn failed');
+        rmSync(saveDir, { recursive: true, force: true });
+        return undefined;
+      }
+      // A child exiting before our stdin write raises EPIPE, without a
+      // listener that would crash the process.
+      child.stdin?.on('error', () => {});
+      const fail = (reason: string) => {
+        child.kill('SIGKILL');
+        rmSync(saveDir, { recursive: true, force: true });
+        logger.debug({ hash, reason }, 'magnet-first head fetch abandoned');
+        return undefined;
+      };
+      const state: {
+        exited: boolean;
+        files?: {
+          index: number;
+          name: string;
+          size: number;
+        }[];
+        selectedIndex?: number;
+        selectedSize?: number;
+        headReady?: number;
+        tailBytes?: number;
+        hashOk?: boolean;
+        registered?: boolean;
+      } = { exited: false };
+      child.on('error', () => {
+        state.exited = true;
+      });
+      child.on('exit', () => {
+        state.exited = true;
+      });
+      // JSON lines can straddle pipe chunks, a per-line parse without a
+      // carry buffer silently drops the biggest one (a pack's file list).
+      let carry = '';
+      const onLine = (line: string) => {
+        if (!line.trim()) return;
+        try {
+          const evt = JSON.parse(line);
+          if (evt.event === 'serving' || evt.event === 'head_piece') {
+            logger.debug({ evt, hash }, 'head fetcher event');
+          } else {
+            logger.info({ evt, hash }, 'head fetcher event');
+          }
+          if (evt.event === 'metadata' && Array.isArray(evt.files)) {
+            state.files = evt.files.map(
+              (file: { name: string; size: number }, index: number) => ({
+                index,
+                name: file.name,
+                size: file.size,
+              })
+            );
+            if (typeof evt.info_hash === 'string') {
+              state.hashOk = evt.info_hash === hash;
+            }
+          }
+          if (evt.event === 'head_ready' && typeof evt.bytes === 'number') {
+            state.headReady = evt.bytes;
+          }
+          if (
+            evt.event === 'tail_ready' &&
+            typeof evt.tail_bytes === 'number'
+          ) {
+            state.tailBytes = evt.tail_bytes;
+            const registered = state.registered
+              ? getHeadSidecar(
+                  hash,
+                  state.selectedIndex ?? -1,
+                  state.selectedSize ?? 0
+                )
+              : undefined;
+            if (registered) registered.tailBytes = evt.tail_bytes;
+          }
+          if (evt.event === 'torrent_hash_mismatch') {
+            state.hashOk = false;
+          }
+        } catch {}
+      };
+      child.stdout!.setEncoding('utf-8');
+      child.stdout!.on('data', (chunk: string) => {
+        carry += chunk;
+        const lines = carry.split('\n');
+        carry = lines.pop() ?? '';
+        for (const line of lines) onLine(line);
+      });
+      child.stderr?.setEncoding('utf-8');
+      child.stderr?.on('data', (chunk: string) => {
+        logger.warn(
+          { chunk: chunk.slice(0, 200), hash },
+          'head fetcher stderr'
+        );
+      });
+      const waitDone = Date.now() + budgetMs;
+      try {
+        // Phase 1: the fetcher emits the de-padded file list once its own
+        // metadata fetch completes.
+        while (!state.files && !state.exited && Date.now() < waitDone) {
+          await sleep(100);
+        }
+        if (!state.files) return fail('no metadata');
+        // Phase 2: select the file the same way the wait loop will, so the
+        // sidecar and the eventual stream reference agree.
+        const selected = await this.selectFile(
+          {
+            hash,
+            name: playbackInfo.filename ?? playbackInfo.title ?? '',
+          },
+          state.files,
+          playbackInfo
+        );
+        if (!selected) return fail('no file selection');
+        state.selectedIndex = selected.index;
+        state.selectedSize = selected.size;
+        child.stdin!.write(
+          `${JSON.stringify({
+            index: selected.index,
+            want: Math.min(selected.size, STREAM_THRESHOLD_BYTES),
+          })}\n`
+        );
+        // Phase 3: the verified head. The tail piece keeps downloading
+        // behind it and attaches to the registration when it lands.
+        while (
+          state.headReady === undefined &&
+          !state.exited &&
+          Date.now() < waitDone
+        ) {
+          await sleep(100);
+        }
+        if (state.headReady === undefined) return fail('head never completed');
+        const overlayFile = join(saveDir, ...selected.name.split(/[\\/]/));
+        if (!(await this.hasFlushedHead(overlayFile, selected.size))) {
+          return fail('overlay not readable');
+        }
+        state.registered = true;
+        registerHeadSidecar({
+          hash,
+          fileIndex: selected.index,
+          file: overlayFile,
+          bytes: Math.min(state.headReady, selected.size),
+          fileSize: selected.size,
+          tailBytes: state.tailBytes ?? 0,
+          child,
+        });
+        logger.info(
+          {
+            hash,
+            overlayBytes: state.headReady,
+            tailBytes: state.tailBytes,
+            file: selected.name,
+          },
+          'magnet-first head sidecar registered'
+        );
+        // The .torrent is only usable when its regenerated info dict
+        // hashes to the infohash the magnet promised, otherwise the caller
+        // falls back to the magnet add (the sidecar stays valid either way).
+        const torrentPath = join(saveDir, 'head.torrent');
+        if (!existsSync(torrentPath) || state.hashOk === false) {
+          return undefined;
+        }
+        return torrentPath;
+      } catch (error) {
+        logger.warn(
+          { err: error, hash },
+          'magnet-first head fetch failed; falling back'
+        );
+        return fail('exception');
+      }
+    });
+  }
+
+  /**
+   * Fetch the head pieces out-of-band with a short-lived libtorrent
+   * sidecar, qBittorrent's picker starves a new file's opening pieces on
+   * some swarms (measured live) while a sidecar finishes them in seconds
+   * and backs playback until qBittorrent catches up. qBittorrent is
+   * stopped for the fetch (one IP = one peer per remote client).
+   */
+  private async fetchHeadPieces(
+    torrent: QbittorrentTorrent,
+    files: Awaited<ReturnType<QBittorrentClient['getFiles']>>,
+    selectedIndex: number,
+    signal?: AbortSignal
+  ): Promise<boolean> {
+    const selected = files.find((f) => f.index === selectedIndex);
+    if (!selected) return false;
+    // The hash names the sidecar directory, anything that is not an
+    // infohash must never reach a path join.
+    if (!/^[a-f0-9]{40}$|^[a-f0-9]{64}$/.test(torrent.hash)) return false;
+    // A directory we cannot create (a read-only downloads mount) means the
+    // accelerator is off, decided BEFORE anything is stopped.
+    const saveDir = headSidecarDir(torrent.hash);
+    if (!saveDir) return false;
+    // Stopping qBittorrent for the fetch would stall any stream that is
+    // already playing another file of this pack.
+    let otherFileLive = false;
+    for (const index of liveFileIndices(this.credential, torrent.hash)) {
+      if (index !== selectedIndex) otherFileLive = true;
+    }
+    if (otherFileLive) {
+      logger.debug(
+        { hash: torrent.hash, selectedIndex },
+        'skipping head fetch: another file of this torrent is live'
+      );
+      return false;
+    }
+
+    const workDir = mkdtempSync(join(tmpdir(), 'aiostreams-head-'));
+    const torrentPath = join(workDir, 'head.torrent');
+    let stopped = false;
+    try {
+      // Stop qB so the fetcher holds the per-IP slots. Assume the stop
+      // worked, an extra restore is harmless but a missed one parks the
+      // torrent stopped forever.
+      stopped = true;
+      const stopApplied = await this.client
+        .stopTorrent(torrent.hash, signal)
+        .catch(() => false);
+      if (!stopApplied && !signal?.aborted) stopped = false;
+      const torrentData = await this.client
+        .exportTorrent(torrent.hash, signal)
+        .catch(() => undefined);
+      if (!torrentData || signal?.aborted) {
+        return false;
+      }
+      writeFileSync(torrentPath, Buffer.from(torrentData));
+      const scriptPath =
+        process.env.AIOSTREAMS_QBIT_HEAD_FETCHER ||
+        fileURLToPath(new URL('head-fetcher.py', import.meta.url));
+      // The fetcher locates the file by its de-padded index (qBittorrent's
+      // own numbering) and computes the exact piece span from the torrent.
+      const endpoint = await this.client
+        .getPeerEndpoint(signal)
+        .catch(() => undefined);
+      const child = spawn('python3', [
+        scriptPath,
+        torrentPath,
+        String(selected.index),
+        String(Math.min(selected.size, STREAM_THRESHOLD_BYTES)),
+        '30',
+        endpoint ? `${endpoint.host}:${endpoint.port}` : '',
+        saveDir,
+      ]);
+      child.stdin?.on('error', () => {});
+      const state: {
+        exited: boolean;
+        headReady?: number;
+        tailBytes?: number;
+      } = { exited: false };
+      let carry = '';
+      const onLine = (line: string) => {
+        if (!line.trim()) return;
+        try {
+          const evt = JSON.parse(line);
+          // Serving heartbeats arrive once a second for the sidecar's
+          // whole life, they keep the pipe drained but would drown the
+          // log at info level.
+          if (evt.event === 'serving' || evt.event === 'head_piece') {
+            logger.debug({ evt, hash: torrent.hash }, 'head fetcher event');
+          } else {
+            logger.info({ evt, hash: torrent.hash }, 'head fetcher event');
+          }
+          if (evt.event === 'head_ready' && typeof evt.bytes === 'number') {
+            state.headReady = evt.bytes;
+          }
+          if (
+            evt.event === 'tail_ready' &&
+            typeof evt.tail_bytes === 'number'
+          ) {
+            state.tailBytes = evt.tail_bytes;
+            const registered = getHeadSidecar(
+              torrent.hash,
+              selected.index,
+              selected.size
+            );
+            if (registered) registered.tailBytes = evt.tail_bytes;
+          }
+        } catch {}
+      };
+      child.stdout.setEncoding('utf-8');
+      child.stdout.on('data', (chunk: string) => {
+        carry += chunk;
+        const lines = carry.split('\n');
+        carry = lines.pop() ?? '';
+        for (const line of lines) onLine(line);
+      });
+      child.stderr?.setEncoding('utf-8');
+      child.stderr?.on('data', (chunk: string) => {
+        logger.warn(
+          { chunk: chunk.slice(0, 200), hash: torrent.hash },
+          'head fetcher stderr'
+        );
+      });
+      child.on('error', (err) => {
+        state.exited = true;
+        logger.warn(
+          { err: String(err), hash: torrent.hash },
+          'head fetcher spawn error'
+        );
+      });
+      child.on('exit', (code) => {
+        state.exited = true;
+        logger.info({ code, hash: torrent.hash }, 'head fetcher exited');
+      });
+      const deadline = Date.now() + 40_000;
+      while (
+        state.headReady === undefined &&
+        !state.exited &&
+        Date.now() < deadline
+      ) {
+        await sleep(100);
+      }
+      if (state.headReady === undefined) {
+        child.kill('SIGKILL');
+        rmSync(saveDir, { recursive: true, force: true });
+        return false;
+      }
+      const overlayFile = join(saveDir, ...selected.name.split(/[\\/]/));
+      if (!(await this.hasFlushedHead(overlayFile, selected.size))) {
+        child.kill('SIGKILL');
+        rmSync(saveDir, { recursive: true, force: true });
+        return false;
+      }
+      registerHeadSidecar({
+        hash: torrent.hash,
+        fileIndex: selected.index,
+        file: overlayFile,
+        bytes: Math.min(state.headReady, selected.size),
+        fileSize: selected.size,
+        tailBytes: state.tailBytes ?? 0,
+        child,
+      });
+      logger.info(
+        {
+          hash: torrent.hash,
+          overlayBytes: state.headReady,
+          tailBytes: state.tailBytes,
+        },
+        'head sidecar registered; playback can start'
+      );
+      return true;
+    } catch (error) {
+      logger.warn(
+        { err: error, hash: torrent.hash },
+        'head fetcher failed; falling back to qBittorrent download'
+      );
+      rmSync(saveDir, { recursive: true, force: true });
+      return false;
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+      // The restore must outlive the caller (no signal).
+      if (stopped) {
+        await this.client.startTorrent(torrent.hash).catch(() => {});
+        await this.client.reannounce(torrent.hash).catch(() => {});
+      }
+    }
   }
 
   /**

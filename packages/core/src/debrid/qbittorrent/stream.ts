@@ -1,5 +1,5 @@
 import { open, stat, FileHandle } from 'fs/promises';
-import { Readable } from 'stream';
+import { PassThrough, Readable } from 'stream';
 import { DebridError } from '../base.js';
 import type { ByteRangeRequest, OpenedByteStream } from '../../shares/types.js';
 import { createLogger } from '../../utils/index.js';
@@ -7,10 +7,12 @@ import { FeatureControl } from '../../utils/feature.js';
 import { QBITTORRENT_SERVICE } from '../../utils/constants.js';
 import {
   FILE_PRIORITY,
+  qbError,
   isOwnTorrent,
   credentialKey,
   QBittorrentClient,
   type QbittorrentFile,
+  type QbittorrentTorrent,
 } from './client.js';
 import {
   applyPathMappings,
@@ -28,6 +30,7 @@ import {
   markFileLive,
   resolveStreamRef,
 } from './tokens.js';
+import { getHeadSidecar } from './head-sidecar.js';
 
 const logger = createLogger('debrid:qbittorrent');
 
@@ -52,6 +55,7 @@ interface Snapshot {
 /** Raw per-torrent state shared across all concurrent streams of a torrent. */
 interface RawTorrentState {
   at: number;
+  torrent?: QbittorrentTorrent;
   files: QbittorrentFile[];
   pieceStates?: number[];
 }
@@ -64,8 +68,6 @@ interface SharedRaw {
 /** Shared per-torrent state, deduplicates polling across concurrent streams. */
 const sharedTorrents = new Map<string, SharedRaw>();
 const pieceReadiness = new Map<string, PieceReadiness>();
-/** Piece size is immutable per torrent; fetched once per key. */
-const pieceSizes = new Map<string, number>();
 
 function torrentKey(entry: QbittorrentStreamRefEntry): string {
   return `${credentialKey(entry.credential)}:${entry.hash}`;
@@ -83,7 +85,8 @@ function getTorrentState(
   if (cached?.promise) return cached.promise;
   const promise = (async () => {
     // No consumer abort since this is shared across streams.
-    const [files, pieceStates] = await Promise.all([
+    const [torrent, files, pieceStates] = await Promise.all([
+      client.getTorrent(entry.hash),
       client.getFiles(entry.hash),
       client.getPieceStates(entry.hash),
     ]);
@@ -95,7 +98,7 @@ function getTorrentState(
       }
       readiness.observe(pieceStates);
     }
-    const value: RawTorrentState = { at: Date.now(), files, pieceStates };
+    const value: RawTorrentState = { at: Date.now(), torrent, files, pieceStates };
     sharedTorrents.set(key, { value });
     if (sharedTorrents.size > MAX_SHARED_TORRENTS) {
       const oldest = sharedTorrents.keys().next().value;
@@ -103,10 +106,6 @@ function getTorrentState(
       if (pieceReadiness.size > MAX_SHARED_TORRENTS) {
         const oldestReadiness = pieceReadiness.keys().next().value;
         if (oldestReadiness !== undefined) pieceReadiness.delete(oldestReadiness);
-      }
-      if (pieceSizes.size > MAX_SHARED_TORRENTS) {
-        const oldestSize = pieceSizes.keys().next().value;
-        if (oldestSize !== undefined) pieceSizes.delete(oldestSize);
       }
     }
     return value;
@@ -122,11 +121,7 @@ async function getSnapshot(
 ): Promise<Snapshot> {
   const key = torrentKey(entry);
   const { at, files, pieceStates } = await getTorrentState(client, entry);
-  let pieceSize = pieceSizes.get(key);
-  if (pieceSize === undefined) {
-    pieceSize = await client.getPieceSize(entry.hash);
-    pieceSizes.set(key, pieceSize);
-  }
+  const pieceSize = await client.getPieceSize(entry.hash);
   const availability = computeFileAvailability({
     files,
     fileIndex: entry.fileIndex,
@@ -221,6 +216,13 @@ class QbittorrentPieceStream extends Readable {
   private path: string;
   private lastSnapshotAt = 0;
   private lastRaisedAt = 0;
+  /**
+   * Bytes `[cursor, knownEnd)` already proven readable, reads inside skip
+   * the per-chunk snapshot (a 10k+ entry JSON on packs). Re-checked at the
+   * frontier or every 30s.
+   */
+  private knownEnd = 0;
+  private knownCheckedAt = 0;
 
   constructor(
     private readonly client: QBittorrentClient,
@@ -267,6 +269,25 @@ class QbittorrentPieceStream extends Readable {
           this.entry.hash,
           this.entry.fileIndex
         );
+        if (
+          this.cursor < this.knownEnd &&
+          Date.now() - this.knownCheckedAt < 30_000
+        ) {
+          const chunkEnd = Math.min(
+            this.knownEnd,
+            this.end,
+            this.cursor + READ_CHUNK_BYTES
+          );
+          const buffer = await this.readChunk(chunkEnd);
+          if (this.destroyed) return;
+          if (buffer !== null && buffer.length > 0) {
+            this.cursor += buffer.length;
+            if (!this.push(buffer)) return;
+            continue;
+          }
+          // A zero-length read means the handle went stale (mid-move),
+          // fall through to the snapshot path to re-locate.
+        }
         let snapshot: Snapshot | undefined;
         try {
           snapshot = await getSnapshot(this.client, this.entry);
@@ -310,15 +331,16 @@ class QbittorrentPieceStream extends Readable {
         }
 
         const frontier = snapshot.availability.readableFrom(this.cursor);
-        if (frontier <= this.cursor && this.entry.filePath) {
+        if (frontier <= this.cursor) {
 
           const diskFrontier =
             this.cursor +
             (await diskContiguousBytes(
-              this.entry.filePath,
+              this.path,
               this.cursor,
               READ_CHUNK_BYTES
             ));
+          this.knownEnd = Math.max(this.knownEnd, diskFrontier);
           if (diskFrontier > this.cursor) {
             this.stalledSince = null;
             const buffer = await this.readChunk(
@@ -332,6 +354,8 @@ class QbittorrentPieceStream extends Readable {
             }
           }
         }
+        this.knownCheckedAt = Date.now();
+        this.knownEnd = Math.max(this.knownEnd, frontier);
         if (frontier > this.cursor) {
           const chunkEnd = Math.min(
             frontier,
@@ -452,6 +476,27 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Serve first then second as one stream, backpressure preserved. */
+function chainStreams(first: Readable, second: Readable): Readable {
+  const out = new PassThrough();
+  const fail = (error: Error) => {
+    first.destroy(error);
+    second.destroy(error);
+    out.destroy(error);
+  };
+  first.on('error', fail);
+  second.on('error', fail);
+  first.pipe(out, { end: false });
+  first.on('end', () => {
+    second.pipe(out);
+  });
+  out.on('close', () => {
+    first.destroy();
+    second.destroy();
+  });
+  return out;
+}
+
 /** Abortable wait (a disconnecting client must not keep a request alive). */
 function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -521,20 +566,12 @@ export async function openQbittorrentStream(opts: {
   }
 
   const client = new QBittorrentClient(entry.credential);
-  const torrent = await client.getTorrent(entry.hash, opts.signal);
+  // The shared snapshot covers existence, ownership, and the file list so
+  // seek-heavy players cannot hammer the WebUI.
+  const { torrent, files } = await getTorrentState(client, entry);
   if (!torrent) {
-    throw new DebridError('qBittorrent no longer has this torrent', {
-      statusCode: 404,
-      statusText: 'Not Found',
-      code: 'NOT_FOUND',
-      type: 'api_error',
-      headers: {},
-    });
+    throw qbError('NOT_FOUND', 'qBittorrent no longer has this torrent');
   }
-  // File lists come from the shared per-torrent snapshot so seek-heavy
-  // players (one open per range request) cannot hammer the WebUI with
-  // redundant calls; the torrent fetch above covers existence and ownership.
-  const { files } = await getTorrentState(client, entry);
   const selectedFile = files.find((file) => file.index === entry.fileIndex);
   if (!selectedFile) {
     throw new DebridError('Torrent no longer contains the selected file', {
@@ -567,38 +604,97 @@ export async function openQbittorrentStream(opts: {
     entry.fileSize
   );
 
+  // A registered sidecar serves the verified opening bytes (and the last
+  // piece, Matroska players read the seek index at EOF before the first
+  // frame) while qBittorrent's own copy is still assembling. A request
+  // fully inside either region needs nothing from qBittorrent's file.
+  const sidecar = getHeadSidecar(entry.hash, entry.fileIndex, entry.fileSize);
+  let overlayHandle: FileHandle | undefined;
+  let overlayEnd = 0;
+  if (sidecar && sidecar.fileIndex === entry.fileIndex && start < end) {
+    const tailStart =
+      sidecar.tailBytes > 0 ? entry.fileSize - sidecar.tailBytes : -1;
+    const inTail = tailStart >= 0 && start >= tailStart;
+    if (inTail || sidecar.bytes > start) {
+      const allowed = await resolveAllowedPath(sidecar.file);
+      overlayHandle =
+        allowed.status === 'allowed'
+          ? await openRegularFile(allowed.realPath!)
+          : undefined;
+      if (overlayHandle) {
+        // A suffix request cannot extend past the file's end, so the tail
+        // region is always served purely from the sidecar.
+        overlayEnd = inTail ? end : Math.min(sidecar.bytes, end);
+      }
+    }
+  }
+
+  let stream: Readable;
+  if (overlayHandle && overlayEnd >= end) {
+    logger.debug(
+      { hash: entry.hash, start, overlayEnd },
+      'serving head from sidecar overlay'
+    );
+    stream = overlayHandle.createReadStream({ start, end: overlayEnd - 1 });
+  } else {
     // Follow relocations (temp dir exits, move on finish, .!qB naming)
     // before giving up on the shared-filesystem diagnosis. A spanning
     // request may race a just-added torrent, give the locator a grace.
-  const located = await locateEntryFile(client, entry, opts.signal);
-  if (!located) {
-    throw new DebridError(
-      'qBittorrent download directory is not reachable from AIOStreams; both must run on the same machine (or share the directory through a mount)',
-      {
-        statusCode: 503,
-        statusText: 'Service Unavailable',
-        code: 'SERVICE_UNAVAILABLE',
-        type: 'api_error',
-        headers: {},
+    let located = await locateEntryFile(client, entry, opts.signal);
+    if (!located && overlayHandle) {
+      for (let i = 0; i < 5 && !located; i++) {
+        await abortableDelay(1_000, opts.signal);
+        located = await locateEntryFile(client, entry, opts.signal);
       }
-    );
+    }
+    if (!located) {
+      overlayHandle?.close().catch(() => {});
+      throw new DebridError(
+        'qBittorrent download directory is not reachable from AIOStreams; both must run on the same machine (or share the directory through a mount)',
+        {
+          statusCode: 503,
+          statusText: 'Service Unavailable',
+          code: 'SERVICE_UNAVAILABLE',
+          type: 'api_error',
+          headers: {},
+        }
+      );
+    }
+    if (located !== entry.filePath) {
+      logger.debug(
+        { hash: entry.hash, from: entry.filePath, to: located },
+        'qBittorrent file moved; following new path'
+      );
+    }
+    if (overlayHandle) {
+      logger.debug(
+        { hash: entry.hash, start, overlayEnd },
+        'serving head from sidecar overlay'
+      );
+      stream = chainStreams(
+        overlayHandle.createReadStream({ start, end: overlayEnd - 1 }),
+        new QbittorrentPieceStream(
+          client,
+          entry,
+          located,
+          isOwnTorrent(torrent),
+          overlayEnd,
+          end,
+          opts.signal
+        )
+      );
+    } else {
+      stream = new QbittorrentPieceStream(
+        client,
+        entry,
+        located,
+        isOwnTorrent(torrent),
+        start,
+        end,
+        opts.signal
+      );
+    }
   }
-  if (located !== entry.filePath) {
-    logger.debug(
-      { hash: entry.hash, from: entry.filePath, to: located },
-      'qBittorrent file moved; following new path'
-    );
-  }
-
-  const stream = new QbittorrentPieceStream(
-    client,
-    entry,
-    located,
-    isOwnTorrent(torrent),
-    start,
-    end,
-    opts.signal
-  );
   return {
     stream,
     size: entry.fileSize,

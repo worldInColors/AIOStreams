@@ -110,14 +110,38 @@ was skipped meanwhile, its download restarts automatically.
   is usually seconds.
 </Callout>
 
+## Cold-start accelerator
+
+Starting a download is rarely the slow part of playing something new; the
+file's first pieces arriving can be, because a BitTorrent client downloads
+what the swarm offers, not what a player is waiting for. AIOStreams ships a
+small sidecar that fixes this:
+
+- When you play something your client does not have yet, a short-lived
+  [libtorrent](https://libtorrent.org) helper joins the swarm wanting only
+  the selected file's opening pieces (and its last piece, which Matroska
+  players read for the seek index before the first frame). Playback then
+  starts from that verified copy while qBittorrent builds its own.
+- The helper needs `python3` with the `libtorrent` module on the same host
+  as AIOStreams. It is probed once at startup; without it the feature
+  quietly turns off and playback falls back to waiting on qBittorrent. Set
+  `QBITTORRENT_HEAD_FETCHER` to use a different interpreter.
+- The helper announces to the swarm from the AIOStreams host's network. If
+  qBittorrent runs behind a VPN, AIOStreams must share that network
+  namespace (the same container network), or the accelerator will announce
+  from your real IP.
+- Private torrents are never announced by the helper, and it never writes
+  outside a `.aiostreams-head` directory inside your first configured
+  download root (which must be writable).
+
 ## Security notes
 
-- Stream URLs carry no credential: they hold an opaque reference that points
-  at a server-side entry (kept for 12 hours) with the WebUI credential, the
-  torrent and the one selected file. The stored credential is encrypted, so
-  a Redis or SQL cache backend never holds the password in plaintext. A
-  leaked URL can be used to read that one file until the reference expires,
-  it cannot reach your client's WebUI or any other torrent.
+- Stream URLs carry no credential: they hold an opaque token that points at
+  an in-process server-side entry (kept for 12 hours) with the WebUI
+  credential, the torrent and the one selected file. Nothing is ever
+  serialized to a cache backend, and a leaked URL can only read that one
+  file until the reference expires; it cannot reach your client's WebUI or
+  any other torrent.
 - The WebUI URL is entered by whoever configures the service, and the paths
   AIOStreams serves come from that client. The service is operator-opt-in:
   it stays hidden until `QBITTORRENT_ALLOWED_ROOTS` is set (a comma-separated
