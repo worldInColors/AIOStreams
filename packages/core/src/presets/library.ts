@@ -2,7 +2,7 @@ import { Addon, Option, ParsedStream, Stream, UserData } from '../db/index.js';
 import StreamParser from '../parser/streams.js';
 import { appConfig, constants, ServiceId } from '../utils/index.js';
 import { BuiltinAddonPreset, BuiltinStreamParser } from './builtin.js';
-import { StremThruPreset } from './stremthru.js';
+import { getInProcessTorrentServices } from './stremthru.js';
 
 class LibraryStreamParser extends BuiltinStreamParser {
   protected isInfoStream(stream: Stream): string | undefined {
@@ -17,12 +17,11 @@ export class LibraryPreset extends BuiltinAddonPreset {
     return LibraryStreamParser;
   }
   public static readonly supportedServices: ServiceId[] = [
-    ...StremThruPreset.supportedServices,
+    ...getInProcessTorrentServices(),
     constants.NZBDAV_SERVICE,
     constants.ALTMOUNT_SERVICE,
     constants.STREMTHRU_NEWZ_SERVICE,
     constants.AIOSTREAMS_SERVICE,
-    constants.QBITTORRENT_SERVICE,
   ];
 
   static override get METADATA() {

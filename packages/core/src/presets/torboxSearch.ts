@@ -12,9 +12,7 @@ import { appConfig, SERVICE_DETAILS } from '../utils/index.js';
 import { constants, ServiceId } from '../utils/index.js';
 import { StreamParser } from '../parser/index.js';
 import { BuiltinAddonPreset, BuiltinStreamParser } from './builtin.js';
-import { StremThruPreset, getInProcessTorrentServices } from './stremthru.js';
-
-
+import { getInProcessTorrentServices } from './stremthru.js';
 export class TorBoxSearchPreset extends BuiltinAddonPreset {
   public static readonly supportedServices: ServiceId[] =
     getInProcessTorrentServices();

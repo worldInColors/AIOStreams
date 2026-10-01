@@ -1,7 +1,6 @@
 ﻿import { Addon, Option, UserData } from '../db/index.js';
 import { appConfig, constants } from '../utils/index.js';
-import { StremThruPreset, getInProcessTorrentServices } from './stremthru.js';
-
+import { getInProcessTorrentServices } from './stremthru.js';
 import { TorznabPreset } from './torznab.js';
 
 export class BitmagnetPreset extends TorznabPreset {

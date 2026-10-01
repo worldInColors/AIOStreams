@@ -1,6 +1,6 @@
 ﻿import { Option, UserData } from '../db/index.js';
 import { appConfig, constants } from '../utils/index.js';
-import { StremThruPreset, getInProcessTorrentServices } from './stremthru.js';
+import { getInProcessTorrentServices } from './stremthru.js';
 import { TorznabPreset } from './torznab.js';
 
 export class SeaDexPreset extends TorznabPreset {
@@ -63,10 +63,9 @@ export class SeaDexPreset extends TorznabPreset {
       URL: [`${appConfig.bootstrap.internalUrl}/builtins/seadex`],
       TIMEOUT: appConfig.presets.defaultTimeout,
       USER_AGENT: appConfig.http.defaultUserAgent,
-      // SeaDex is hosted in-process: its manifest is served from the
-      // internal URL and its torrents are resolved by the engine against the
-      // user's enabled services (getTorrentServices), so the qBittorrent
-      // playback service is offered here like on the other builtins.
+      // SeaDex is hosted in-process and resolved against the user's enabled
+      // services (getTorrentServices), so qBittorrent is offered like on
+      // the other builtins.
       SUPPORTED_SERVICES: getInProcessTorrentServices(),
       DESCRIPTION:
         'SeaDex is a curated database of the best anime releases. Get high-quality torrents for anime based on community recommendations.',

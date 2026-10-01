@@ -11,7 +11,7 @@ import StreamParser from '../parser/streams.js';
 import { appConfig, constants } from '../utils/index.js';
 import { BuiltinStreamParser } from './builtin.js';
 import { baseOptions } from './preset.js';
-import { StremThruPreset, getInProcessTorrentServices } from './stremthru.js';
+import { getInProcessTorrentServices } from './stremthru.js';
 import { TorznabPreset } from './torznab.js';
 
 export class NekoBtStreamParser extends BuiltinStreamParser {
