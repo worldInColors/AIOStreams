@@ -60,23 +60,9 @@ export async function diskContiguousBytes(
   }
 }
 
-/**
- * Parse and validate the configured download roots. A root containing a
- * comma cannot be expressed in this format, a relative root would resolve
- * against the process working directory, and a filesystem-root root would
- * confine nothing; all three invalidate the list. Shared by the feature
- * gate (which needs "is the service offered at all") and the per-path
- * check, so the two can never disagree.
- */
-export function validQbittorrentRoots(): string[] {
-  return (process.env.QBITTORRENT_ALLOWED_ROOTS ?? '')
-    .split(',')
-    .map((root) => root.trim())
-    .filter(
-      (root) =>
-        root.startsWith('/') && root.replace(/\/+$/, '') !== '' && root !== '/'
-    );
-}
+import { validQbittorrentRoots } from './roots.js';
+
+export { validQbittorrentRoots };
 
 /**
  * Open a path for reading, refusing anything that is not a regular file.
