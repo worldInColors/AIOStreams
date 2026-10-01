@@ -1,7 +1,7 @@
 import { Option, UserData } from '../db/index.js';
 import { appConfig, constants } from '../utils/index.js';
 import { baseOptions } from './preset.js';
-import { StremThruPreset } from './stremthru.js';
+import { StremThruPreset, getInProcessTorrentServices } from './stremthru.js';
 import { TorznabPreset } from './torznab.js';
 
 export class AnimeToshoNewPreset extends TorznabPreset {
@@ -30,7 +30,7 @@ export class AnimeToshoNewPreset extends TorznabPreset {
         type: 'multi-select',
         required: false,
         showInSimpleMode: false,
-        options: StremThruPreset.supportedServices.map((service) => ({
+        options: getInProcessTorrentServices().map((service) => ({
           value: service,
           label: constants.SERVICE_DETAILS[service].name,
         })),
@@ -81,7 +81,7 @@ export class AnimeToshoNewPreset extends TorznabPreset {
         appConfig.builtins.animeToshoNew.timeout ??
         appConfig.presets.defaultTimeout,
       USER_AGENT: appConfig.http.defaultUserAgent,
-      SUPPORTED_SERVICES: StremThruPreset.supportedServices,
+      SUPPORTED_SERVICES: getInProcessTorrentServices(),
       DESCRIPTION:
         'An addon to get debrid results from Anime Tosho, mirroring Nyaa.si, TokyoTosho and other anime release sources. Requires a free API key.',
       OPTIONS: options,
