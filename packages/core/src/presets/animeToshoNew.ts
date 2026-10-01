@@ -1,7 +1,7 @@
 import { Option, UserData } from '../db/index.js';
 import { appConfig, constants } from '../utils/index.js';
 import { baseOptions } from './preset.js';
-import { StremThruPreset, getInProcessTorrentServices } from './stremthru.js';
+import { getInProcessTorrentServices } from './stremthru.js';
 import { TorznabPreset } from './torznab.js';
 
 export class AnimeToshoNewPreset extends TorznabPreset {

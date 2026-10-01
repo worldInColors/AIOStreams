@@ -1,16 +1,12 @@
 ﻿import { Addon, Option, Stream, UserData } from '../db/index.js';
 import { Preset, baseOptions } from './preset.js';
 import { appConfig, RESOURCES, ServiceId, constants } from '../utils/index.js';
-import { StremThruPreset, getInProcessTorrentServices } from './stremthru.js';
+import { getInProcessTorrentServices } from './stremthru.js';
 import { BuiltinAddonPreset } from './builtin.js';
 
 export class TorznabPreset extends BuiltinAddonPreset {
   static override get METADATA() {
     const supportedResources = [constants.STREAM_RESOURCE];
-    const supportedServices: ServiceId[] = [
-      ...StremThruPreset.supportedServices,
-      constants.QBITTORRENT_SERVICE,
-    ];
     const options: Option[] = [
       {
         id: 'name',
