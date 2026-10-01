@@ -15,6 +15,7 @@ import {
 import {
   applyPathMappings,
   computeFileAvailability,
+  diskContiguousBytes,
   deriveFilePath,
   openRegularFile,
   PieceReadiness,
@@ -309,6 +310,28 @@ class QbittorrentPieceStream extends Readable {
         }
 
         const frontier = snapshot.availability.readableFrom(this.cursor);
+        if (frontier <= this.cursor && this.entry.filePath) {
+
+          const diskFrontier =
+            this.cursor +
+            (await diskContiguousBytes(
+              this.entry.filePath,
+              this.cursor,
+              READ_CHUNK_BYTES
+            ));
+          if (diskFrontier > this.cursor) {
+            this.stalledSince = null;
+            const buffer = await this.readChunk(
+              Math.min(diskFrontier, this.end)
+            );
+            if (this.destroyed) return;
+            if (buffer !== null && buffer.length > 0) {
+              this.cursor += buffer.length;
+              if (!this.push(buffer)) return;
+              continue;
+            }
+          }
+        }
         if (frontier > this.cursor) {
           const chunkEnd = Math.min(
             frontier,

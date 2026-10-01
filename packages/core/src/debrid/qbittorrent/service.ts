@@ -33,6 +33,7 @@ import {
 import {
   STREAM_THRESHOLD_BYTES,
   applyPathMappings,
+  diskContiguousBytes,
   computeFileAvailability,
   deriveFilePath,
   openRegularFile,
@@ -529,11 +530,17 @@ export class QBittorrentService implements TorrentDebridService {
             pieceSize,
           });
           const threshold = Math.min(file.size, STREAM_THRESHOLD_BYTES);
-          const dataReady =
+          let dataReady =
             availability.complete ||
             availability.contiguousFrom(0) >= threshold;
           // Piece states flip before flush, verify bytes are readable.
           const flushed = await this.hasFlushedHead(filePath, file.size);
+          if (!dataReady && flushed) {
+            // pieceStates lags on busy clients, trust the bytes.
+            dataReady =
+              (await diskContiguousBytes(filePath, 0, threshold + 64 * 1024)) >=
+              threshold;
+          }
           if (dataReady && flushed) {
             return { file, filePath };
           }

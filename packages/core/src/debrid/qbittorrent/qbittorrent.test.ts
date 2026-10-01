@@ -27,6 +27,7 @@ import {
 import {
   applyPathMappings,
   computeFileAvailability,
+  diskContiguousBytes,
   deriveFilePath,
   PieceReadiness,
   planFilePriorities,
@@ -361,6 +362,31 @@ describe('deriveFilePath', () => {
     );
   });
 
+});
+
+describe('diskContiguousBytes', () => {
+  test('counts written bytes and stops at the first zero chunk', async (t) => {
+    mock.method(SettingsRepository, 'getAll', async () => []);
+    mock.method(SettingsRepository, 'getVersion', async () => 0);
+    await settingsStore.initialise();
+    t.after(() => mock.restoreAll());
+    const dir = mkdtempSync(join(tmpdir(), 'aiostreams-qbit-'));
+    const path = join(dir, 'video.mkv');
+    // 192KiB of content, then 128KiB of zeros (unwritten pre-allocation).
+    writeFileSync(path, Buffer.concat([Buffer.alloc(192 * 1024, 1), Buffer.alloc(128 * 1024)]));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    assert.equal(await diskContiguousBytes(path, 0, 16 * 1024 * 1024), 192 * 1024);
+    assert.equal(await diskContiguousBytes(path, 64 * 1024, 16 * 1024 * 1024), 128 * 1024);
+    assert.equal(await diskContiguousBytes(path, 200 * 1024, 16 * 1024 * 1024), 0);
+  });
+
+  test('a fully pre-allocated zero file reports nothing', async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'aiostreams-qbit-'));
+    const path = join(dir, 'video.mkv');
+    writeFileSync(path, Buffer.alloc(1024 * 1024));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    assert.equal(await diskContiguousBytes(path, 0, 16 * 1024 * 1024), 0);
+  });
 });
 
 describe('PieceReadiness', () => {
