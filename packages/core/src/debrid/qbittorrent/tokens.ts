@@ -1,9 +1,7 @@
 import { randomUUID } from 'crypto';
 import z from 'zod';
-import { createLogger, decryptString, encryptString } from '../../utils/index.js';
+import { decryptString, encryptString } from '../../utils/index.js';
 import { QbittorrentCredentialSchema } from './client.js';
-
-const logger = createLogger('debrid:qbittorrent');
 
 /** How long a stream reference stays resolvable after a resolve. */
 export const STREAM_REF_TTL_SECONDS = 12 * 60 * 60;
@@ -25,16 +23,11 @@ export interface QbittorrentStreamRefEntry {
   addedAt: number;
 }
 
-/**
- * Server-side store for stream references. Tokens carry only an opaque
- * reference (plus expiry), so a leaked or tampered stream URL can neither
- * disclose the WebUI credential nor reach a path that was not registered by
- * a resolve. Kept in-process on purpose: references are minted and served by
- * the same instance, and this keeps their lifecycle independent of whatever
- * cache backend (and its write buffering) the operator configured. A
- * restart simply expires every outstanding link; players replay to refresh.
- */
-const streamRefs = new Map<string, { sealed: string; expiresAt: number }>();
+/** In-process ref store, a restart expires all links. */
+const streamRefs = new Map<
+  string,
+  { entry: QbittorrentStreamRefEntry; expiresAt: number }
+>();
 const MAX_STREAM_REFS = 10_000;
 const refSweeper = setInterval(() => {
   const now = Date.now();
@@ -44,77 +37,32 @@ const refSweeper = setInterval(() => {
 }, 60_000);
 refSweeper.unref();
 
-/**
- * Register a stream entry behind a fresh opaque reference for
- * {@link STREAM_REF_TTL_SECONDS}. The WebUI credential inside the entry is
- * encrypted at rest, so a Redis or SQL cache backend never holds the
- * password in plaintext. Each resolve mints a new reference; references are
- * never reused, so one expiring cannot affect other streams.
- */
-export async function registerStreamRef(
+/** Register a stream entry behind a fresh opaque ref. */
+export function registerStreamRef(
   entry: QbittorrentStreamRefEntry
-): Promise<string> {
+): string {
   const ref = randomUUID();
-  const sealed = encryptString(JSON.stringify(entry));
-  if (!sealed.success) {
-    throw new Error('failed to seal qbittorrent stream reference');
-  }
   if (streamRefs.size >= MAX_STREAM_REFS) {
     const oldest = streamRefs.keys().next().value;
     if (oldest !== undefined) streamRefs.delete(oldest);
   }
   streamRefs.set(ref, {
-    sealed: sealed.data,
+    entry,
     expiresAt: Date.now() + STREAM_REF_TTL_SECONDS * 1000,
   });
   return ref;
 }
 
-/**
- * Look up the entry for a stream token reference. Undefined when the
- * reference is unknown, expired, or fails validation (a schema change with
- * references still cached must degrade to an expired link, not a crash);
- * the caller should answer as an expired link.
- */
-const SealedCredentialSchema = z.object({
-  url: z.string(),
-  username: z.string(),
-  password: z.string(),
-  skipOtherFiles: z.boolean().optional(),
-  // The credential is stored POST-transform (skipOtherFiles already a
-  // boolean, pathMappings already parsed into pairs), so the entry schema
-  // mirrors the output shape rather than re-running the input transforms.
-  pathMappings: z
-    .array(z.object({ from: z.string(), to: z.string() }))
-    .optional(),
-});
-
-const SealedStreamRefSchema = z.object({
-  credential: SealedCredentialSchema,
-  hash: z.string(),
-  fileIndex: z.number(),
-  filePath: z.string(),
-  fileSize: z.number(),
-  filename: z.string(),
-  addedAt: z.number(),
-});
-
-export async function resolveStreamRef(
+/** Look up a ref, undefined means expired. */
+export function resolveStreamRef(
   ref: string
-): Promise<QbittorrentStreamRefEntry | undefined> {
+): QbittorrentStreamRefEntry | undefined {
   const stored = streamRefs.get(ref);
   if (!stored || stored.expiresAt <= Date.now()) {
     if (stored) streamRefs.delete(ref);
     return undefined;
   }
-  const sealed = stored.sealed;
-  const opened = decryptString(sealed);
-  if (!opened.success || opened.data == null) return undefined;
-  try {
-    return SealedStreamRefSchema.parse(JSON.parse(opened.data));
-  } catch {
-    return undefined;
-  }
+  return stored.entry;
 }
 
 /** How long a file stays live after its last consumer touch. */
