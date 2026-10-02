@@ -93,7 +93,6 @@ function buildMagnet(
   hash: string
 ): string {
   let magnet = `magnet:?xt=urn:btih:${hash}`;
-
   const displayName = playbackInfo.filename ?? playbackInfo.title;
   if (displayName) {
     magnet += `&dn=${encodeURIComponent(displayName)}`;
@@ -167,7 +166,6 @@ export class QBittorrentService implements TorrentDebridService {
       const failed = FAILED_STATES.has(torrent.state);
       const complete =
         SEEDED_STATES.has(torrent.state) || torrent.progress >= 1;
-
       const download: DebridDownload = toDownload(
         torrent,
         failed ? 'failed' : complete ? 'cached' : 'downloading'
@@ -287,7 +285,6 @@ export class QBittorrentService implements TorrentDebridService {
     cacheAndPlay: boolean,
     signal?: AbortSignal
   ): Promise<string | undefined> {
-
     const hash = playbackInfo.hash.toLowerCase();
     // One wall-clock budget shared by both wait loops.
     const deadline = Date.now() + this.options.maxWaitTime;
@@ -348,7 +345,6 @@ export class QBittorrentService implements TorrentDebridService {
         }
       };
       if (
-        playbackInfo.private !== undefined &&
         playbackInfo.downloadUrl &&
         appConfig.builtins.debrid.useTorrentDownloadUrl
       ) {
@@ -359,12 +355,10 @@ export class QBittorrentService implements TorrentDebridService {
       } else {
         await addTorrent(buildMagnet(playbackInfo, hash));
       }
-
       if (!cacheAndPlay) return undefined;
       torrent = await this.waitForTorrent(hash, signal, deadline);
       freshAdd = true;
     }
-
 
     const readiness = await this.waitForReadable(
       torrent,
@@ -395,7 +389,6 @@ export class QBittorrentService implements TorrentDebridService {
       }),
       exp: Math.floor(Date.now() / 1000) + STREAM_REF_TTL_SECONDS,
     });
-
 
     return `${appConfig.bootstrap.baseUrl}/api/v1/qbittorrent/stream/${encodeURIComponent(
       token

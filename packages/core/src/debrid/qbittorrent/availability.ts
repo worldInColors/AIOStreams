@@ -110,13 +110,10 @@ export async function resolveAllowedPath(
 ): Promise<ResolvedAllowedPath> {
   const real = await realpath(candidate).catch(() => undefined);
   if (!real) return { status: 'missing' };
-
   const stats = await stat(real).catch(() => undefined);
   if (!stats) return { status: 'missing' };
   if (!stats.isFile()) return { status: 'invalid' };
-
   const roots = validQbittorrentRoots();
-
   if (roots.length === 0) return { status: 'outside' };
   // Fold for case-insensitive platforms.
   const fold =
@@ -208,19 +205,8 @@ export function planFilePriorities(params: {
 }
 
 /**
- * Absolute on-disk path of one file within a torrent. The files API reports
- * names relative to the torrent's base as recorded in the metainfo (root
- * folder included); `content_path` is the torrent root's CURRENT location —
- * including qBittorrent's temp/incomplete directory before completion and
- * wherever "move on finish" relocates it — while `save_path` is only the
- * final destination. So the base comes from comparing the two: when they
- * differ the root folder is present and content_path is "<base>/<root>";
- * when they match the files sit directly in the save dir, either because
- * the metainfo is rootless or because qBittorrent stripped the root folder
- * (then the shared first segment of every name is not part of the disk
- * path). A single-file torrent's content_path already IS the file; this
- * special case is load-bearing, not a simplification. Re-derived every poll
- * and on byte-stream ENOENT so relocations cannot strand a stream.
+ * On-disk path of one file, content_path tracks the live location while
+ * save_path is final-only, the two tell whether the root folder is on disk.
  */
 export function deriveFilePath(
   torrent: { content_path: string; save_path: string },
