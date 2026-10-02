@@ -6,20 +6,13 @@ import { QbittorrentCredentialSchema } from './client.js';
 /** How long a stream reference stays resolvable after a resolve. */
 export const STREAM_REF_TTL_SECONDS = 12 * 60 * 60;
 
-
 export interface QbittorrentStreamRefEntry {
   credential: z.infer<typeof QbittorrentCredentialSchema>;
-
   hash: string;
-
   fileIndex: number;
-
   filePath: string;
-
   fileSize: number;
-
   filename: string;
-
   addedAt: number;
 }
 
@@ -82,14 +75,11 @@ function pruneLiveFiles(now: number): void {
   }
 }
 
-
 let lastLivePrune = 0;
-
 function liveKey(
   credential: z.infer<typeof QbittorrentCredentialSchema>,
   hash: string
 ): string {
-
   const url = credential.url.replace(/\/+$/, '');
   return `${url}|${credential.username}|${hash}`;
 }
@@ -101,7 +91,6 @@ export function markFileLive(
   ttlMs: number = LIVE_FILE_TTL_MS
 ): void {
   const now = Date.now();
-
   if (now - lastLivePrune >= 1_000) {
     lastLivePrune = now;
     pruneLiveFiles(now);
@@ -137,7 +126,6 @@ export function liveFileIndices(
 /** Opaque token for byte URLs, carries only a ref id and expiry. */
 export const QbittorrentStreamTokenSchema = z.object({
   ref: z.string().min(1),
-
   exp: z.number().int().positive(),
 });
 

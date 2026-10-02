@@ -312,7 +312,6 @@ class QbittorrentPieceStream extends Readable {
         if (!snapshot || this.destroyed) return;
         if (snapshot.at !== this.lastSnapshotAt) {
           this.lastSnapshotAt = snapshot.at;
-
           await this.ensureHandleCurrent();
         }
         // Heal a priority skip that slipped past the opener.
@@ -332,7 +331,6 @@ class QbittorrentPieceStream extends Readable {
 
         const frontier = snapshot.availability.readableFrom(this.cursor);
         if (frontier <= this.cursor) {
-
           const diskFrontier =
             this.cursor +
             (await diskContiguousBytes(
@@ -368,7 +366,7 @@ class QbittorrentPieceStream extends Readable {
             this.stalledSince = null;
             // Advance by bytes actually read.
             this.cursor += buffer.length;
-            if (!this.push(buffer)) return; // backpressure; _read fires again
+            if (!this.push(buffer)) return; // backpressure, _read fires again
             continue;
           }
           // Zero-length read, fall through to the wait.
@@ -595,8 +593,8 @@ export async function openQbittorrentStream(opts: {
 
   const start =
     opts.range?.suffixLength !== undefined
-      ? // A zero suffix length is unsatisfiable (RFC 7233): start = size,
-        // which the range server answers with 416.
+      ? // A zero suffix length is unsatisfiable (RFC 7233), start = size
+        // and the range server answers with 416.
         Math.max(0, entry.fileSize - opts.range.suffixLength)
       : (opts.range?.start ?? 0);
   const end = Math.min(

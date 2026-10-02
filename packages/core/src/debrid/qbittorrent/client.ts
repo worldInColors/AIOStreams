@@ -232,7 +232,6 @@ function unauthorized(message: string): DebridError {
  * without one.
  */
 export class QBittorrentClient {
-
   constructor(private readonly credential: QbittorrentCredential) {}
 
   private baseUrl(): string {
@@ -665,7 +664,6 @@ export class QBittorrentClient {
       signal
     );
   }
-
 
   /** The raw .torrent file bytes, for seeding out-of-band fetchers. */
   async exportTorrent(
