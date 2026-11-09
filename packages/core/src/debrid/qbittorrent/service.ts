@@ -72,6 +72,8 @@ const STOPPED_STATES = new Set([
   'stoppedDL',
   'stoppedUP',
 ]);
+/** Waiting for a free slot under the client's queueing limits. */
+const QUEUED_STATES = new Set(['queuedDL', 'queuedUP']);
 const SEEDED_STATES = new Set([
   'uploading',
   'pausedUP',
@@ -360,6 +362,13 @@ export class QBittorrentService implements TorrentDebridService {
       freshAdd = true;
     }
 
+    // A fresh torrent announces on qBittorrent's own schedule, an immediate
+    // reannounce pulls peers in sooner and peer discovery is often half of a
+    // cold start.
+    if (freshAdd) {
+      await this.client.reannounce(torrent.hash, signal);
+    }
+
     const readiness = await this.waitForReadable(
       torrent,
       playbackInfo,
@@ -430,6 +439,7 @@ export class QBittorrentService implements TorrentDebridService {
     let priorityFailures = 0;
     let prioritiesAbandoned = false;
     let resumeAttempted = false;
+    let forceStartAttempted = false;
     let headFetched = false;
     let torrentMisses = 0;
     let lastState = torrent.state;
@@ -490,6 +500,26 @@ export class QBittorrentService implements TorrentDebridService {
             logger.warn(
               { hash: current.hash, state: current.state },
               'could not resume stopped torrent for playback'
+            );
+          }
+        }
+        // A queued torrent (queueing limits) sits doing nothing while the
+        // whole resolve budget burns, force-start our own past the queue.
+        // Adopted ones keep the user's queue settings.
+        if (
+          !forceStartAttempted &&
+          isOwnTorrent(current) &&
+          QUEUED_STATES.has(current.state)
+        ) {
+          forceStartAttempted = true;
+          const forced = await this.client.forceStartTorrent(
+            current.hash,
+            signal
+          );
+          if (!forced) {
+            logger.warn(
+              { hash: current.hash, state: current.state },
+              'could not force-start queued torrent for playback'
             );
           }
         }

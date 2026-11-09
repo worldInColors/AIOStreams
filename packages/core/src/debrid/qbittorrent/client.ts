@@ -665,6 +665,18 @@ export class QBittorrentClient {
     );
   }
 
+  /**
+   * Force-start a torrent past the queueing limits. Same endpoint name on
+   * 4.x and 5.x, only our own torrents are ever force-started.
+   */
+  async forceStartTorrent(hash: string, signal?: AbortSignal): Promise<boolean> {
+    return this.postFirstSupported(
+      ['/api/v2/torrents/setForceStart'],
+      { hashes: hash, value: 'true' },
+      signal
+    );
+  }
+
   /** The raw .torrent file bytes, for seeding out-of-band fetchers. */
   async exportTorrent(
     hash: string,
