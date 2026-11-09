@@ -108,19 +108,25 @@ if SOURCE.startswith("magnet:"):
             sys.exit(4)
         time.sleep(0.2)
     info = h.torrent_file()
+    # Never announce a private torrent from this second client, a second
+    # peer id from the same IP is what whitelists punish. Check the moment
+    # the metadata reveals it, before anything is wanted.
+    if info.priv():
+        print(json.dumps({"event": "private_refused"}), flush=True)
+        sys.exit(6)
     # Nothing is wanted until the parent names the file, default priority
     # would burn the peer slots on pieces nobody asked for.
     h.prioritize_pieces([0] * info.num_pieces())
 else:
     info = lt.torrent_info(SOURCE)
+    # Same refusal before the torrent is ever added here: a .torrent file
+    # knows it is private up front, adding it first would announce to the
+    # passkey'd trackers before the check could run.
+    if info.priv():
+        print(json.dumps({"event": "private_refused"}), flush=True)
+        sys.exit(6)
     h = ses.add_torrent({"ti": info, "save_path": tmp})
     h.prioritize_pieces([0] * info.num_pieces())
-
-# Never announce a private torrent from this second client, a second peer
-# id from the same IP is what whitelists punish.
-if info.priv():
-    print(json.dumps({"event": "private_refused"}), flush=True)
-    sys.exit(6)
 
 expected_hash = str(h.info_hash()) if SOURCE.startswith("magnet:") else str(info.info_hash())
 
@@ -163,6 +169,12 @@ sel_path, file_offset, file_size = selected
 if SOURCE.startswith("magnet:"):
     try:
         t = lt.create_torrent(info)
+        # The info dict carries no announce-list when it arrived over DHT or
+        # PEX, qBittorrent would start tracker-less on exactly the weak
+        # swarms that need every tracker. The magnet's trackers live outside
+        # the info dict, so adding them cannot change the infohash.
+        for tracker in params.trackers:
+            t.add_tracker(tracker)
         torrent_bytes = lt.bencode(t.generate())
         regen = lt.torrent_info(lt.bdecode(torrent_bytes))
         print(json.dumps({"event": "torrent_hash_ok" if str(regen.info_hash()) == expected_hash
