@@ -68,6 +68,12 @@ export class GrabCache<V> {
     return this.cache.delete(key);
   }
 
+  /** Store `value` under `key` without fetching, an independent fetch
+   * that refused to join a stuck producer still wants its result kept. */
+  async set(key: string, value: V): Promise<void> {
+    await this.cache.set(key, value);
+  }
+
   /**
    * Return the cached value for `key`, else run (and cache) `produce`, deduping
    * concurrent callers for the same key. Successful results are written through

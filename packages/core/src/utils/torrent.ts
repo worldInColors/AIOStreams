@@ -34,6 +34,15 @@ function hostGrabLimit(url: string): ReturnType<typeof pLimit> {
   return limit;
 }
 
+/** The resolve budget ran out before the grab finished, not a fetch
+ * failure, a URL budget-exhausted this way is not negative-cached. */
+class GrabBudgetExhausted extends Error {
+  constructor(message = 'grab budget exhausted') {
+    super(message);
+    this.name = 'GrabBudgetExhausted';
+  }
+}
+
 interface TorrentMetadata {
   hash: string;
   files: DebridFile[];
@@ -151,11 +160,12 @@ export class TorrentGrabber {
   }
 
   /**
-   * Eager variant for resolve time: waits for the (single-flighted) fetch
-   * instead of returning undefined on a cold lazy cache. Deliberately NOT
-   * run through the shared fetch limiter, a resolve must not queue behind
-   * the background search-time warm grabs. `timeoutMs` bounds the grab to
-   * the caller's remaining budget.
+   * Eager variant for resolve time. Deliberately NOT run through the
+   * shared fetch limiter and only through the per-host limiter, a resolve
+   * must not queue behind the background search-time warm grabs. An
+   * already-running producer for the key is joined only up to the caller's
+   * remaining budget, past that this fetches independently.
+   * `timeoutMs` bounds queue wait, join and fetch.
    */
   static async getMetadataEager(
     torrent: UnprocessedTorrent,
@@ -174,11 +184,65 @@ export class TorrentGrabber {
       );
       return undefined;
     }
+    // One absolute deadline for the queue wait, a joined fetch and this
+    // fetch, so no part of the grab outlives the resolve budget.
+    const deadlineAt =
+      timeoutMs !== undefined ? Date.now() + timeoutMs : undefined;
+    const remaining = () =>
+      deadlineAt !== undefined ? deadlineAt - Date.now() : undefined;
+    const checkBudget = () => {
+      const left = remaining();
+      if (left !== undefined && left <= 0) {
+        throw new GrabBudgetExhausted('metadata grab budget exhausted');
+      }
+    };
     try {
+      const hit = await this.#cache.cached(key);
+      if (hit) return hit;
+      // A warm grab may already be fetching this key. Joining it blindly
+      // inherits its slow timeout, race the join against the budget and
+      // fetch independently when the join loses.
+      const running = this.#cache.inFlight(key);
+      if (running) {
+        const left = remaining();
+        if (left === undefined) return await running;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          return await Promise.race([
+            running,
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(
+                () => reject(new GrabBudgetExhausted()),
+                left
+              );
+            }),
+          ]);
+        } catch (error) {
+          if (!(error instanceof GrabBudgetExhausted)) throw error;
+          const fetched = await hostGrabLimit(url)(() => {
+            checkBudget();
+            return this.#fetchMetadata(torrent, 0, deadlineAt);
+          });
+          await this.#cache.set(key, fetched);
+          return fetched;
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      checkBudget();
       return await this.#cache.fetch(key, () =>
-        this.#fetchMetadata(torrent, 0, timeoutMs)
+        hostGrabLimit(url)(() => {
+          checkBudget();
+          return this.#fetchMetadata(torrent, 0, deadlineAt);
+        })
       );
     } catch (error: any) {
+      if (error instanceof GrabBudgetExhausted) {
+        logger.debug(
+          `Metadata grab for ${makeUrlLogSafe(url)} exceeded the resolve budget`
+        );
+        return undefined;
+      }
       logger.warn(
         `Failed to fetch metadata for ${makeUrlLogSafe(url)}: ${error.message}`
       );
@@ -196,7 +260,7 @@ export class TorrentGrabber {
   static async #fetchMetadata(
     torrent: UnprocessedTorrent,
     redirectCount: number = 0,
-    timeoutMs?: number
+    deadlineAt?: number
   ): Promise<TorrentMetadata> {
     const { downloadUrl } = torrent;
     if (!downloadUrl) throw new Error('Download URL must be provided.');
@@ -204,21 +268,24 @@ export class TorrentGrabber {
     const configuredTimeout = appConfig.builtins.getTorrent.lazily
       ? 30000
       : appConfig.builtins.getTorrent.timeout;
+    // Redirect hops recompute from the one absolute deadline, the budget
+    // is not multiplied by the hop count.
     const timeout =
-      timeoutMs !== undefined
-        ? Math.min(timeoutMs, configuredTimeout)
+      deadlineAt !== undefined
+        ? Math.max(
+            1,
+            Math.min(deadlineAt - Date.now(), configuredTimeout)
+          )
         : configuredTimeout;
     const start = Date.now();
 
-    const response = await hostGrabLimit(downloadUrl)(() =>
-      makeRequest(downloadUrl, {
-        timeout,
-        // User-agent comes from a `[torrent_grabs]` (or per-host) entry in
-        // REQUEST_HEADER_OVERRIDES, applied inside makeRequest.
-        context: 'torrent_grabs',
-        rawOptions: { redirect: 'manual' },
-      })
-    );
+    const response = await makeRequest(downloadUrl, {
+      timeout,
+      // User-agent comes from a `[torrent_grabs]` (or per-host) entry in
+      // REQUEST_HEADER_OVERRIDES, applied inside makeRequest.
+      context: 'torrent_grabs',
+      rawOptions: { redirect: 'manual' },
+    });
 
     let metadata: TorrentMetadata;
 
@@ -242,7 +309,7 @@ export class TorrentGrabber {
         return this.#fetchMetadata(
           { ...torrent, downloadUrl: nextUrl },
           redirectCount + 1,
-          timeoutMs
+          deadlineAt
         );
       }
 

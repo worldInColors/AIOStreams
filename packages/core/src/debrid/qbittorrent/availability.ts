@@ -48,15 +48,18 @@ export async function resolveOnDiskVariant(
   return undefined;
 }
 
-/** Scan forward until the first all-zero 64KiB chunk, that's where
- * written data ends in a pre-allocated file. Compressed video never
- * has an all-zero chunk, so this is reliable. */
+/** Scan forward until the first all-zero 16KiB block, that's where
+ * written data ends in a pre-allocated file. Blocks land individually
+ * before their piece passes the hash check, so a partly-written region
+ * has zero blocks inside a non-zero chunk, only block granularity is
+ * exact. Compressed video never has an all-zero block. */
 export async function diskContiguousBytes(
   filePath: string,
   from: number,
   limit: number
 ): Promise<number> {
   const CHUNK = 64 * 1024;
+  const BLOCK = 16 * 1024;
   const handle = await openRegularFile(filePath);
   if (!handle) return 0;
   try {
@@ -68,8 +71,14 @@ export async function diskContiguousBytes(
       const length = Math.min(CHUNK, end - cursor);
       const { bytesRead } = await handle.read(buffer, 0, length, cursor);
       if (bytesRead === 0) break;
-      if (!buffer.subarray(0, bytesRead).some((byte) => byte !== 0)) break;
-      cursor += bytesRead;
+      let written = 0;
+      for (let offset = 0; offset < bytesRead; offset += BLOCK) {
+        const stop = Math.min(offset + BLOCK, bytesRead);
+        if (!buffer.subarray(offset, stop).some((byte) => byte !== 0)) break;
+        written = stop;
+      }
+      if (written === 0) break;
+      cursor += written;
     }
     return cursor - from;
   } catch {

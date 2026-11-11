@@ -986,6 +986,87 @@ describe('QBittorrentService resolve', () => {
     assert.doesNotMatch(addBody, /magnet/);
   });
 
+  test('a grabbed torrent with bytes is added by upload, not by URL', async (t) => {
+    const realHash = hashOf('15');
+    let addBody = '';
+    const original = TorrentGrabber.getMetadataEager;
+    TorrentGrabber.getMetadataEager = async () => ({
+      hash: realHash,
+      files: [],
+      sources: [],
+      torrentB64: Buffer.from('d4:infod4:name4:testee').toString('base64'),
+    });
+    t.after(() => {
+      TorrentGrabber.getMetadataEager = original;
+    });
+    await withMockedWebUi(t, {
+      login: true,
+      onAdd: (body) => (addBody = body),
+      intercepts: [
+        { path: `/api/v2/torrents/info?hashes=${realHash}`, body: [] },
+      ],
+    });
+    // cacheAndPlay off returns after the add, no readable wait needed.
+    const link = await service().resolve(
+      {
+        type: 'torrent',
+        hash: hashOf('r'),
+        hashProvisional: true,
+        downloadUrl: 'http://indexer.example/download?key=pass',
+        title: 'Some Release 1080p',
+        sources: [],
+        fileIndex: 0,
+      },
+      'video.mkv',
+      false
+    );
+    assert.equal(link, undefined);
+    assert.notEqual(addBody, '', 'the add endpoint was called');
+    assert.doesNotMatch(addBody, /urls=/);
+    assert.doesNotMatch(addBody, /magnet/);
+  });
+
+  test('an aborted resolve never reaches any add', async (t) => {
+    let addBody = '';
+    const original = TorrentGrabber.getMetadataEager;
+    TorrentGrabber.getMetadataEager = async () => ({
+      hash: hashOf('16'),
+      files: [],
+      sources: [],
+    });
+    t.after(() => {
+      TorrentGrabber.getMetadataEager = original;
+    });
+    await withMockedWebUi(t, {
+      login: true,
+      onAdd: (body) => (addBody = body),
+      intercepts: [],
+    });
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      service().resolve(
+        {
+          type: 'torrent',
+          hash: hashOf('s'),
+          hashProvisional: true,
+          downloadUrl: 'http://indexer.example/download?key=pass',
+          title: 'Some Release 1080p',
+          sources: [],
+          fileIndex: 0,
+        },
+        'video.mkv',
+        true,
+        undefined,
+        controller.signal
+      ),
+      (error: unknown) =>
+        error instanceof DebridError &&
+        error.message === 'resolve aborted (failover lost)'
+    );
+    assert.equal(addBody, '', 'no add request was made');
+  });
+
   test('a provisional hash whose grab fails refuses instead of magneting', async (t) => {
     const original = TorrentGrabber.getMetadataEager;
     TorrentGrabber.getMetadataEager = async () => undefined;

@@ -325,9 +325,11 @@ export class QBittorrentService implements TorrentDebridService {
     // offense, so every provisional result is treated as private no
     // matter what the info dict says.
     const privateTorrent = provisional || playbackInfo.private === true;
-    if (provisional) {
+    if (provisional || (privateTorrent && playbackInfo.downloadUrl)) {
       // The grab shares the resolve budget, it must not spend more than
-      // what is left of it.
+      // what is left of it. For an enriched private result the hash is
+      // already real, the grab then only fetches the bytes for the add
+      // and usually hits the warm grab's cache entry.
       const metadata = await TorrentGrabber.getMetadataEager(
         {
           type: 'torrent',
@@ -340,14 +342,16 @@ export class QBittorrentService implements TorrentDebridService {
         },
         Math.max(1_000, deadline - Date.now())
       );
-      if (!metadata?.hash) {
+      if (provisional && !metadata?.hash) {
         throw qbError(
           'STORE_MAGNET_INVALID',
           'Could not fetch the torrent from the indexer URL'
         );
       }
-      hash = metadata.hash.toLowerCase();
-      grabbedTorrentB64 = metadata.torrentB64;
+      if (provisional && metadata?.hash) {
+        hash = metadata.hash.toLowerCase();
+      }
+      grabbedTorrentB64 = metadata?.torrentB64;
       this.throwIfAborted(signal);
     }
 
@@ -409,7 +413,9 @@ export class QBittorrentService implements TorrentDebridService {
       };
       if (
         playbackInfo.downloadUrl &&
-        (appConfig.builtins.debrid.useTorrentDownloadUrl || provisional)
+        (appConfig.builtins.debrid.useTorrentDownloadUrl ||
+          provisional ||
+          privateTorrent)
       ) {
         // The grab already downloaded the bytes, hand them over instead of
         // making qBittorrent fetch the passkey'd URL again.
@@ -428,12 +434,13 @@ export class QBittorrentService implements TorrentDebridService {
           );
           await addTorrent(playbackInfo.downloadUrl);
         }
-      } else if (provisional) {
-        // No URL add available and a provisional hash must never become a
-        // DHT-announced magnet.
+      } else if (provisional || privateTorrent) {
+        // No URL add available, and a private torrent must never become a
+        // DHT-announced magnet (libtorrent cannot tell a magnet is private
+        // before the metadata arrives).
         throw qbError(
           'STORE_MAGNET_INVALID',
-          'qBittorrent could not add this torrent URL'
+          'qBittorrent could not add this private torrent'
         );
       } else {
         await addTorrent(buildMagnet(playbackInfo, hash));
@@ -729,10 +736,10 @@ export class QBittorrentService implements TorrentDebridService {
           const flushed = onDisk
             ? await this.hasFlushedHead(onDisk, file.size)
             : false;
-          // A chunk counts as soon as any byte in it is non-zero, so the
-          // frontier can overshoot by up to one chunk. Require a chunk of
-          // margin so the real bytes still cover the threshold.
-          const diskNeeded = Math.min(threshold + 64 * 1024, file.size);
+          // A block only counts when every byte in it is non-zero, the
+          // frontier cannot report past real data. One block of margin
+          // still covers the partial tail block.
+          const diskNeeded = Math.min(threshold + 16 * 1024, file.size);
           let diskFrontier: number | undefined;
           if (!dataReady && onDisk && flushed) {
             const from = Math.max(0, diskScanned - 64 * 1024);
@@ -741,7 +748,7 @@ export class QBittorrentService implements TorrentDebridService {
               (await diskContiguousBytes(
                 onDisk,
                 from,
-                Math.min(threshold + 128 * 1024, file.size) - from
+                Math.min(threshold + 32 * 1024, file.size) - from
               ));
             diskScanned = diskFrontier;
           }
