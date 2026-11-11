@@ -406,6 +406,7 @@ async function buildDebridStreams(
         ? {
             type: 'torrent',
             downloadUrl: result.downloadUrl,
+            hashProvisional: result.hashProvisional,
             title: result.title,
             hash: result.hash,
             private: result.private,

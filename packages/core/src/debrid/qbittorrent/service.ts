@@ -86,8 +86,26 @@ const SEEDED_STATES = new Set([
 
 const MAGNET_HASH = /urn:btih:([a-f0-9]{40})/i;
 
+/**
+ * Real infohashes learned from .torrent URL adds, keyed by the provisional
+ * stand-in so repeat clicks skip the discovery diff. In-process only, a
+ * restart just rediscovers.
+ */
+const discoveredHashes = new Map<string, { hash: string; at: number }>();
+const DISCOVERED_HASH_TTL_MS = 60 * 60 * 1000;
+const MAX_DISCOVERED_HASHES = 512;
+
+const BARE_HASH = /^[a-f0-9]{40}$|^[a-f0-9]{64}$/;
+
+/**
+ * Accepts a magnet URI or a bare infohash, the pipeline feeds checkMagnets
+ * plain hashes while the magnet-first path hands it full magnets.
+ */
 function hashFromMagnet(magnet: string): string | undefined {
-  return MAGNET_HASH.exec(magnet)?.[1]?.toLowerCase();
+  const fromMagnet = MAGNET_HASH.exec(magnet)?.[1]?.toLowerCase();
+  if (fromMagnet) return fromMagnet;
+  const trimmed = magnet.trim().toLowerCase();
+  return BARE_HASH.test(trimmed) ? trimmed : undefined;
 }
 
 function buildMagnet(
@@ -287,7 +305,18 @@ export class QBittorrentService implements TorrentDebridService {
     cacheAndPlay: boolean,
     signal?: AbortSignal
   ): Promise<string | undefined> {
-    const hash = playbackInfo.hash.toLowerCase();
+    // A provisional hash stands in for a .torrent URL result, the real
+    // infohash only exists once qBittorrent has fetched it.
+    const provisional = playbackInfo.hashProvisional === true;
+    let hash = playbackInfo.hash.toLowerCase();
+    let hashUnknown = provisional;
+    if (provisional) {
+      const known = discoveredHashes.get(hash);
+      if (known && Date.now() - known.at < DISCOVERED_HASH_TTL_MS) {
+        hash = known.hash;
+        hashUnknown = false;
+      }
+    }
     // One wall-clock budget shared by both wait loops.
     const deadline = Date.now() + this.options.maxWaitTime;
 
@@ -300,8 +329,37 @@ export class QBittorrentService implements TorrentDebridService {
         ? await this.client.getTorrent(playbackInfo.serviceItemId.toLowerCase())
         : undefined) ?? (await this.client.getTorrent(hash));
 
+    if (!torrent && hashUnknown && playbackInfo.downloadUrl) {
+      // A .torrent URL result with no known infohash: add by URL and learn
+      // the hash from whichever tagged torrent qBittorrent creates.
+      torrent = await this.discoverByUrlAdd(
+        playbackInfo.downloadUrl,
+        playbackInfo.filename ?? playbackInfo.title,
+        signal,
+        deadline
+      );
+      if (!torrent) {
+        throw qbError(
+          'TIMEOUT',
+          'qBittorrent never received the torrent from the indexer URL'
+        );
+      }
+      discoveredHashes.set(playbackInfo.hash.toLowerCase(), {
+        hash: torrent.hash,
+        at: Date.now(),
+      });
+      if (discoveredHashes.size > MAX_DISCOVERED_HASHES) {
+        const oldest = discoveredHashes.keys().next().value;
+        if (oldest !== undefined) discoveredHashes.delete(oldest);
+      }
+      hash = torrent.hash;
+      hashUnknown = false;
+      freshAdd = true;
+    }
+
     if (
       !torrent &&
+      !hashUnknown &&
       cacheAndPlay &&
       // Magnet-first never touches private torrents, DHT-announcing a
       // private infohash breaks tracker rules and the metadata never arrives
@@ -402,6 +460,54 @@ export class QBittorrentService implements TorrentDebridService {
     return `${appConfig.bootstrap.baseUrl}/api/v1/qbittorrent/stream/${encodeURIComponent(
       token
     )}/${encodeURIComponent(displayName)}`;
+  }
+
+  /**
+   * Add a .torrent URL whose infohash is unknown and find out which tagged
+   * torrent qBittorrent created from it, by diffing the tagged list around
+   * the add. A torrent added by an earlier attempt (a resolve that timed out
+   * after the add) shows no diff, so a name match is the fallback.
+   */
+  private async discoverByUrlAdd(
+    url: string,
+    nameHint: string | undefined,
+    signal: AbortSignal | undefined,
+    deadline: number
+  ): Promise<QbittorrentTorrent | undefined> {
+    const normalise = (value: string) =>
+      value.replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
+    const matchesHint = (name: string) => {
+      if (!nameHint) return false;
+      const a = normalise(name);
+      const b = normalise(nameHint);
+      return a === b || b.startsWith(a) || a.startsWith(b);
+    };
+    const before = new Set(
+      (await this.client.getTaggedTorrents(signal).catch(() => [])).map(
+        (t) => t.hash
+      )
+    );
+    try {
+      await this.client.addTorrentUrl(url, signal);
+    } catch (error) {
+      // A 4.x duplicate add answers 200 "Fails.", keep polling anyway.
+      if (!(error instanceof DebridError && error.code === 'STORE_MAGNET_INVALID')) {
+        throw error;
+      }
+    }
+    const until = Math.min(deadline, Date.now() + 15_000);
+    for (;;) {
+      this.throwIfAborted(signal);
+      const tagged = await this.client.getTaggedTorrents(signal).catch(() => []);
+      const fresh = tagged.find((t) => !before.has(t.hash));
+      if (fresh) return fresh;
+      const byName = tagged.find((t) => matchesHint(t.name));
+      if (byName) return byName;
+      if (Date.now() >= until) return undefined;
+      await sleep(this.options.pollInterval, undefined, { signal }).catch(
+        () => {}
+      );
+    }
   }
 
   private async waitForTorrent(

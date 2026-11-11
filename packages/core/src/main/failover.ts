@@ -56,6 +56,7 @@ function buildPlaybackInfo(
         title: fileInfo.title,
         downloadUrl: fileInfo.downloadUrl,
         hash: fileInfo.hash,
+        hashProvisional: fileInfo.hashProvisional,
         private: fileInfo.private,
         sources: fileInfo.sources,
         index: fileInfo.index,

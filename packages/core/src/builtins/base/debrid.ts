@@ -282,7 +282,7 @@ export abstract class BaseDebridAddon<T extends BaseDebridConfig> {
           ...torrent,
           hash: provisionalTorrentHash(torrent.downloadUrl!),
           hashProvisional: true,
-        });
+        } as Torrent);
         void TorrentGrabber.getMetadata(torrent);
       }
       this.logger.info(
@@ -905,6 +905,7 @@ export abstract class BaseDebridAddon<T extends BaseDebridConfig> {
         ? {
             type: 'torrent',
             downloadUrl: torrentOrNzb.downloadUrl,
+            hashProvisional: torrentOrNzb.hashProvisional,
             title: torrentOrNzb.title,
             hash: torrentOrNzb.hash,
             private: torrentOrNzb.private,
