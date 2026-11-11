@@ -45,6 +45,7 @@ import {
   diskContiguousBytes,
   computeFileAvailability,
   deriveFilePath,
+  fileOffsetInTorrent,
   openRegularFile,
   planFilePriorities,
   resolveAllowedPath,
@@ -325,11 +326,11 @@ export class QBittorrentService implements TorrentDebridService {
     // offense, so every provisional result is treated as private no
     // matter what the info dict says.
     const privateTorrent = provisional || playbackInfo.private === true;
-    if (provisional || (privateTorrent && playbackInfo.downloadUrl)) {
+    if (provisional) {
       // The grab shares the resolve budget, it must not spend more than
-      // what is left of it. For an enriched private result the hash is
-      // already real, the grab then only fetches the bytes for the add
-      // and usually hits the warm grab's cache entry.
+      // what is left of it. Only the provisional case needs the real
+      // hash from the grab, everything else can look in qBittorrent
+      // first and grab lazily at the add.
       const metadata = await TorrentGrabber.getMetadataEager(
         {
           type: 'torrent',
@@ -342,16 +343,14 @@ export class QBittorrentService implements TorrentDebridService {
         },
         Math.max(1_000, deadline - Date.now())
       );
-      if (provisional && !metadata?.hash) {
+      if (!metadata?.hash) {
         throw qbError(
           'STORE_MAGNET_INVALID',
           'Could not fetch the torrent from the indexer URL'
         );
       }
-      if (provisional && metadata?.hash) {
-        hash = metadata.hash.toLowerCase();
-      }
-      grabbedTorrentB64 = metadata?.torrentB64;
+      hash = metadata.hash.toLowerCase();
+      grabbedTorrentB64 = metadata.torrentB64;
       this.throwIfAborted(signal);
     }
 
@@ -396,6 +395,31 @@ export class QBittorrentService implements TorrentDebridService {
 
     if (!torrent) {
       this.throwIfAborted(signal);
+      // An enriched private result still has its real hash, qBittorrent
+      // simply did not have the torrent. The bytes grab runs here, after
+      // the lookup, so replays of torrents qBittorrent already holds
+      // never touch the indexer.
+      if (
+        privateTorrent &&
+        !provisional &&
+        playbackInfo.downloadUrl &&
+        grabbedTorrentB64 === undefined
+      ) {
+        const metadata = await TorrentGrabber.getMetadataEager(
+          {
+            type: 'torrent',
+            title: playbackInfo.title ?? '',
+            size: 0,
+            downloadUrl: playbackInfo.downloadUrl,
+            sources: playbackInfo.sources,
+            guid: playbackInfo.guid,
+            indexer: playbackInfo.indexer,
+          },
+          Math.max(1_000, deadline - Date.now())
+        );
+        grabbedTorrentB64 = metadata?.torrentB64;
+        this.throwIfAborted(signal);
+      }
       const addTorrent = async (url: string) => {
         try {
           await this.client.addTorrentUrl(url, signal);
@@ -736,19 +760,22 @@ export class QBittorrentService implements TorrentDebridService {
           const flushed = onDisk
             ? await this.hasFlushedHead(onDisk, file.size)
             : false;
-          // A block only counts when every byte in it is non-zero, the
-          // frontier cannot report past real data. One block of margin
-          // still covers the partial tail block.
+          // A block counts when any byte in it is non-zero, an unwritten
+          // block is all zeros. Slices sit on the torrent-global block
+          // grid so an unwritten block in a pack file cannot straddle two
+          // slices. One block of margin covers the partial tail.
           const diskNeeded = Math.min(threshold + 16 * 1024, file.size);
           let diskFrontier: number | undefined;
           if (!dataReady && onDisk && flushed) {
             const from = Math.max(0, diskScanned - 64 * 1024);
+            const phase = fileOffsetInTorrent(files, file.index, pieceSize) % (16 * 1024);
             diskFrontier =
               from +
               (await diskContiguousBytes(
                 onDisk,
                 from,
-                Math.min(threshold + 32 * 1024, file.size) - from
+                Math.min(threshold + 32 * 1024, file.size) - from,
+                phase
               ));
             diskScanned = diskFrontier;
           }
@@ -960,7 +987,7 @@ export class QBittorrentService implements TorrentDebridService {
       const saveDir = headSidecarDir(hash);
       if (!saveDir) return undefined;
       const scriptPath =
-        process.env.AIOSTREAMS_QBIT_HEAD_FETCHER ||
+        process.env.QBITTORRENT_HEAD_FETCHER_SCRIPT ||
         fileURLToPath(new URL('head-fetcher.py', import.meta.url));
       const endpoint = await this.client
         .getPeerEndpoint(signal)
@@ -1207,7 +1234,7 @@ export class QBittorrentService implements TorrentDebridService {
       }
       writeFileSync(torrentPath, Buffer.from(torrentData));
       const scriptPath =
-        process.env.AIOSTREAMS_QBIT_HEAD_FETCHER ||
+        process.env.QBITTORRENT_HEAD_FETCHER_SCRIPT ||
         fileURLToPath(new URL('head-fetcher.py', import.meta.url));
       // The fetcher locates the file by its de-padded index (qBittorrent's
       // own numbering) and computes the exact piece span from the torrent.

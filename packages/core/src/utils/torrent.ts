@@ -200,12 +200,13 @@ export class TorrentGrabber {
       const hit = await this.#cache.cached(key);
       if (hit) return hit;
       // A warm grab may already be fetching this key. Joining it blindly
-      // inherits its slow timeout, race the join against the budget and
-      // fetch independently when the join loses.
+      // inherits its slow timeout, cap the join window and keep the rest
+      // of the budget for an independent fetch when the join loses.
       const running = this.#cache.inFlight(key);
       if (running) {
         const left = remaining();
         if (left === undefined) return await running;
+        const joinMs = Math.min(2_000, Math.floor(left / 2));
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {
           return await Promise.race([
@@ -213,7 +214,7 @@ export class TorrentGrabber {
             new Promise<never>((_, reject) => {
               timer = setTimeout(
                 () => reject(new GrabBudgetExhausted()),
-                left
+                joinMs
               );
             }),
           ]);
@@ -223,7 +224,9 @@ export class TorrentGrabber {
             checkBudget();
             return this.#fetchMetadata(torrent, 0, deadlineAt);
           });
-          await this.#cache.set(key, fetched);
+          // Fire and forget like GrabCache.fetch does, a failed cache
+          // write must not fail an otherwise successful grab.
+          void this.#cache.set(key, fetched).catch(() => {});
           return fetched;
         } finally {
           clearTimeout(timer);

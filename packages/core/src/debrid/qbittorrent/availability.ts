@@ -48,15 +48,37 @@ export async function resolveOnDiskVariant(
   return undefined;
 }
 
-/** Scan forward until the first all-zero 16KiB block, that's where
- * written data ends in a pre-allocated file. Blocks land individually
- * before their piece passes the hash check, so a partly-written region
- * has zero blocks inside a non-zero chunk, only block granularity is
- * exact. Compressed video never has an all-zero block. */
+/** Byte offset of one file inside the torrent, the piece range pins it
+ * when pad files shift the summed offsets. */
+export function fileOffsetInTorrent(
+  files: QbittorrentFile[],
+  fileIndex: number,
+  pieceSize: number
+): number {
+  const sorted = [...files].sort((a, b) => a.index - b.index);
+  const position = sorted.findIndex((file) => file.index === fileIndex);
+  if (position === -1) return 0;
+  let offset = sorted.slice(0, position).reduce((sum, f) => sum + f.size, 0);
+  if (
+    pieceSize > 0 &&
+    Math.floor(offset / pieceSize) !== sorted[position].piece_range[0]
+  ) {
+    offset = sorted[position].piece_range[0] * pieceSize;
+  }
+  return offset;
+}
+
+/** Scan forward until the first all-zero block, that's where written
+ * data ends in a pre-allocated file. libtorrent writes whole 16KiB
+ * blocks on the torrent-global grid, so slices cut on that grid (`phase`
+ * is the file's offset in the torrent, modulo the block size) and a
+ * slice counts when any byte in it is non-zero, an unwritten block is
+ * all zeros while compressed video never has a zero block. */
 export async function diskContiguousBytes(
   filePath: string,
   from: number,
-  limit: number
+  limit: number,
+  phase = 0
 ): Promise<number> {
   const CHUNK = 64 * 1024;
   const BLOCK = 16 * 1024;
@@ -66,21 +88,43 @@ export async function diskContiguousBytes(
     const stats = await handle.stat();
     const end = Math.min(from + limit, stats.size);
     const buffer = Buffer.alloc(CHUNK);
-    let cursor = from;
+    // Align the scan start to the block grid, a block straddling the
+    // resume point must not be split across slices.
+    let cursor = from - ((phase + from) % BLOCK);
+    if (cursor < 0) cursor = 0;
+    // The file-portion of a block straddling the file start, before the
+    // first full grid boundary.
+    const headLen = (BLOCK - ((phase + cursor) % BLOCK)) % BLOCK;
+    let firstChunk = true;
     while (cursor < end) {
       const length = Math.min(CHUNK, end - cursor);
       const { bytesRead } = await handle.read(buffer, 0, length, cursor);
       if (bytesRead === 0) break;
       let written = 0;
-      for (let offset = 0; offset < bytesRead; offset += BLOCK) {
+      let offset = 0;
+      if (firstChunk && headLen > 0) {
+        const head = buffer.subarray(0, Math.min(headLen, bytesRead));
+        if (head.length === 0 || !head.some((byte) => byte !== 0)) {
+          break;
+        }
+        written = head.length;
+        if (head.length < headLen) {
+          cursor += written;
+          break;
+        }
+        offset = headLen;
+      }
+      firstChunk = false;
+      for (; offset < bytesRead; offset += BLOCK) {
         const stop = Math.min(offset + BLOCK, bytesRead);
         if (!buffer.subarray(offset, stop).some((byte) => byte !== 0)) break;
         written = stop;
       }
       if (written === 0) break;
       cursor += written;
+      if (written < bytesRead) break;
     }
-    return cursor - from;
+    return Math.max(0, cursor - from);
   } catch {
     return 0;
   } finally {
@@ -321,13 +365,7 @@ export function computeFileAvailability(params: {
     };
   }
   const fileSize = file.size;
-  let fileOffset = sorted
-    .slice(0, position)
-    .reduce((sum, f) => sum + f.size, 0);
-  // v2 pad files shift summed offsets, the piece range pins the real one.
-  if (Math.floor(fileOffset / pieceSize) !== file.piece_range[0]) {
-    fileOffset = file.piece_range[0] * pieceSize;
-  }
+  const fileOffset = fileOffsetInTorrent(files, fileIndex, pieceSize);
 
   if (!pieceStates) {
     const complete = file.progress >= 1;

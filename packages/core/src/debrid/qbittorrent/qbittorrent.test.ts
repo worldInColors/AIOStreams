@@ -1,7 +1,7 @@
 import '../../index.js';
 import { test, describe, mock, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
@@ -392,6 +392,50 @@ describe('diskContiguousBytes', () => {
     t.after(() => rmSync(dir, { recursive: true, force: true }));
     assert.equal(await diskContiguousBytes(path, 0, 16 * 1024 * 1024), 0);
   });
+
+  test('slices align to the torrent block grid, not the file start', async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'aiostreams-qbit-'));
+    const path = join(dir, 'video.mkv');
+    // File sits at torrent offset 8KiB: [0,8KiB) is the tail of a block
+    // straddling the file start, whole blocks run [8,24), [24,40) KiB.
+    // An unwritten block must stop the scan even though file-local 16KiB
+    // slices around it would both contain non-zero bytes.
+    writeFileSync(
+      path,
+      Buffer.concat([
+        Buffer.alloc(24 * 1024, 1),
+        Buffer.alloc(16 * 1024),
+        Buffer.alloc(8 * 1024, 1),
+      ])
+    );
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const phase = 8 * 1024;
+    assert.equal(
+      await diskContiguousBytes(path, 0, 16 * 1024 * 1024, phase),
+      24 * 1024
+    );
+    // A resume point mid-file stays on the block grid.
+    assert.equal(
+      await diskContiguousBytes(path, 20 * 1024, 16 * 1024 * 1024, phase),
+      4 * 1024
+    );
+  });
+
+  test('a zero head region of a straddling block reports nothing', async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'aiostreams-qbit-'));
+    const path = join(dir, 'video.mkv');
+    // The straddling first block is unwritten, its whole file-portion
+    // is zeros even though the first full block after it is written.
+    writeFileSync(
+      path,
+      Buffer.concat([Buffer.alloc(8 * 1024), Buffer.alloc(32 * 1024, 1)])
+    );
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    assert.equal(
+      await diskContiguousBytes(path, 0, 16 * 1024 * 1024, 8 * 1024),
+      0
+    );
+  });
 });
 
 describe('PieceReadiness', () => {
@@ -779,13 +823,14 @@ describe('QBittorrentService resolve', () => {
   // The confinement check fails closed without configured roots, these
   // tests build their content under the system temp directory.
   const previousRoots = process.env.QBITTORRENT_ALLOWED_ROOTS;
-  const previousFetcher = process.env.AIOSTREAMS_QBIT_HEAD_FETCHER;
+  const previousFetcher = process.env.QBITTORRENT_HEAD_FETCHER_SCRIPT;
   before(() => {
     process.env.QBITTORRENT_ALLOWED_ROOTS = tmpdir();
-    // Resolve tests must not spawn real head fetchers, point the override
-    // at a binary that fails instantly so the magnet-first and fallback
+    // Resolve tests must not spawn real head fetchers, the override is
+    // the SCRIPT the fetcher interpreter runs, /bin/false makes python
+    // fail parsing it immediately so the magnet-first and fallback
     // paths both bail into the mocked WebUI flow.
-    process.env.AIOSTREAMS_QBIT_HEAD_FETCHER = '/bin/false';
+    process.env.QBITTORRENT_HEAD_FETCHER_SCRIPT = '/bin/false';
   });
   after(() => {
     if (previousRoots === undefined) {
@@ -794,16 +839,19 @@ describe('QBittorrentService resolve', () => {
       process.env.QBITTORRENT_ALLOWED_ROOTS = previousRoots;
     }
     if (previousFetcher === undefined) {
-      delete process.env.AIOSTREAMS_QBIT_HEAD_FETCHER;
+      delete process.env.QBITTORRENT_HEAD_FETCHER_SCRIPT;
     } else {
-      process.env.AIOSTREAMS_QBIT_HEAD_FETCHER = previousFetcher;
+      process.env.QBITTORRENT_HEAD_FETCHER_SCRIPT = previousFetcher;
     }
   });
 
   // One unique infohash per test, the live-file registry is module-global
   // with a 15-minute TTL, so reusing a hash would leak liveness between
-  // tests (and correctly suppress skips of a "live" file).
-  const hashOf = (char: string) => char.repeat(40);
+  // tests (and correctly suppress skips of a "live" file). Forty hex
+  // chars, the length qBittorrent itself reports.
+  const hashOf = (seed: string) =>
+    (Array.from(seed, (c) => (c.charCodeAt(0) % 16).toString(16)).join('') +
+      '0'.repeat(40)).slice(0, 40);
 
   function playback(hash: string, fileIndex: number): PlaybackInfo {
     return { type: 'torrent', hash, sources: [], fileIndex };
@@ -1065,6 +1113,161 @@ describe('QBittorrentService resolve', () => {
         error.message === 'resolve aborted (failover lost)'
     );
     assert.equal(addBody, '', 'no add request was made');
+  });
+
+  test('an enriched private torrent is added by URL, never as a magnet', async (t) => {
+    const realHash = hashOf('17');
+    let addBody = '';
+    const original = TorrentGrabber.getMetadataEager;
+    TorrentGrabber.getMetadataEager = async () => undefined;
+    t.after(() => {
+      TorrentGrabber.getMetadataEager = original;
+    });
+    await withMockedWebUi(t, {
+      login: true,
+      onAdd: (body) => (addBody = body),
+      intercepts: [
+        { path: `/api/v2/torrents/info?hashes=${realHash}`, body: [] },
+      ],
+    });
+    const link = await service().resolve(
+      {
+        type: 'torrent',
+        hash: realHash,
+        private: true,
+        downloadUrl: 'http://indexer.example/download?key=pass',
+        title: 'Some Release 1080p',
+        sources: [],
+        fileIndex: 0,
+      },
+      'video.mkv',
+      false
+    );
+    assert.equal(link, undefined);
+    assert.match(addBody, /urls=http%3A%2F%2Findexer\.example/);
+    assert.doesNotMatch(addBody, /magnet/);
+  });
+
+  test('an enriched private torrent without a URL is refused, never magneted', async (t) => {
+    const realHash = hashOf('18');
+    let addBody = '';
+    await withMockedWebUi(t, {
+      login: true,
+      onAdd: (body) => (addBody = body),
+      intercepts: [
+        { path: `/api/v2/torrents/info?hashes=${realHash}`, body: [] },
+      ],
+    });
+    await assert.rejects(
+      service().resolve(
+        {
+          type: 'torrent',
+          hash: realHash,
+          private: true,
+          title: 'Some Release 1080p',
+          sources: [],
+          fileIndex: 0,
+        },
+        'video.mkv',
+        false
+      ),
+      (error: unknown) =>
+        error instanceof DebridError && error.code === 'STORE_MAGNET_INVALID'
+    );
+    assert.equal(addBody, '', 'no add request was made');
+  });
+
+  test('a resolve joining a stuck grab fetches independently within budget', async (t) => {
+    // The first request to this server takes 10s, the second redirects
+    // to a magnet. Without the capped join window the second eager call
+    // would burn its whole budget waiting and return nothing. MockAgent
+    // cannot fake a hung reply, so this runs against a real socket.
+    const magnetHash = 'a'.repeat(40);
+    let hits = 0;
+    const server = createServer((req, res) => {
+      hits++;
+      if (hits === 1) {
+        setTimeout(() => {
+          res.writeHead(200);
+          res.end('late');
+        }, 10_000);
+        return;
+      }
+      res.writeHead(302, {
+        location: `magnet:?xt=urn:btih:${magnetHash}&dn=x`,
+      });
+      res.end();
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve)
+    );
+    const { port } = server.address() as AddressInfo;
+    t.after(() => {
+      server.closeAllConnections();
+      server.close();
+    });
+    const torrent = {
+      type: 'torrent' as const,
+      title: 'Some Release 1080p',
+      size: 0,
+      downloadUrl: `http://127.0.0.1:${port}/download?key=pass&run=${Date.now()}`,
+      sources: [],
+    };
+    void TorrentGrabber.getMetadataEager(torrent).catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const startedAt = Date.now();
+    const metadata = await TorrentGrabber.getMetadataEager(torrent, 3_000);
+    const elapsed = Date.now() - startedAt;
+    assert.equal(metadata?.hash, magnetHash);
+    assert.ok(
+      elapsed < 2_900,
+      `independent fetch ran within budget (${elapsed}ms)`
+    );
+  });
+
+  test('a torrent already in qBittorrent never spawns the fetcher', async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'aiostreams-nospawn-'));
+    const marker = join(dir, 'spawned');
+    const script = join(dir, 'marker.py');
+    writeFileSync(script, `with open(${JSON.stringify(marker)}, 'w'): pass\nraise SystemExit(1)\n`);
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const previous = process.env.QBITTORRENT_HEAD_FETCHER_SCRIPT;
+    process.env.QBITTORRENT_HEAD_FETCHER_SCRIPT = script;
+    const realHash = hashOf('19');
+    const contentPath = makeContent(t, [{ name: 'video.mkv', size: 2000 }]);
+    try {
+      await withMockedWebUi(t, {
+        login: true,
+        intercepts: dataIntercepts(
+          realHash,
+          { ...torrentFixture(realHash, 'downloading'), content_path: contentPath, tags: QBITTORRENT_TAG },
+          [{ ...fileFixture(0, 'video.mkv', 2000), piece_range: [0, 7] }],
+          [2, 2, 2, 2, 2, 2, 2, 2]
+        ),
+      });
+      const link = await service().resolve(
+        {
+          type: 'torrent',
+          hash: realHash,
+          title: 'Some Release 1080p',
+          sources: [],
+          fileIndex: 0,
+        },
+        'video.mkv',
+        true
+      );
+      assert.match(link ?? '', /\/api\/v1\/qbittorrent\/stream\//);
+      assert.ok(
+        !existsSync(marker),
+        'the head fetcher was never spawned for a torrent qB already has'
+      );
+    } finally {
+      if (previous === undefined) {
+        delete process.env.QBITTORRENT_HEAD_FETCHER_SCRIPT;
+      } else {
+        process.env.QBITTORRENT_HEAD_FETCHER_SCRIPT = previous;
+      }
+    }
   });
 
   test('a provisional hash whose grab fails refuses instead of magneting', async (t) => {
