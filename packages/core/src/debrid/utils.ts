@@ -139,6 +139,15 @@ export function buildFallbackKey(
 }
 
 /**
+ * A deterministic stand-in infohash for results that carry only a .torrent
+ * URL. Indexers in the Unit3D family expose no magnet and no hash, so until
+ * a client fetches the .torrent there is nothing to key the result by.
+ */
+export function provisionalTorrentHash(downloadUrl: string): string {
+  return getSimpleTextHash('provisional:' + downloadUrl);
+}
+
+/**
  * Build a compact, deterministic key for DistributedLock and playback-link
  * cache lookups.  All absent values serialise to `-` so keys remain stable
  * across call sites.  The NZB URL is MD5-hashed before inclusion to keep the
@@ -220,6 +229,9 @@ export interface Torrent extends BaseFile {
   files?: DebridFile[];
   // magnet?: string;
   private?: boolean;
+  /** The hash is a stand-in derived from the downloadUrl, the real
+   * infohash only appears once a client fetches the .torrent itself. */
+  hashProvisional?: boolean;
 }
 
 export interface UnprocessedTorrent extends BaseFile {

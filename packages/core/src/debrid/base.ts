@@ -248,6 +248,9 @@ const BaseFileInfoSchema = z.object({
 const TorrentInfoSchema = BaseFileInfoSchema.extend({
   downloadUrl: z.string().optional(),
   hash: z.string(),
+  /** The hash is a stand-in for a .torrent URL result, the service
+   * discovers the real infohash when it adds the torrent. */
+  hashProvisional: z.boolean().optional(),
   private: z.boolean().optional(),
   sources: z.array(z.string()),
   type: z.literal('torrent'),

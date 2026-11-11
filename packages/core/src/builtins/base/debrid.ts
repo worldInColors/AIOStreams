@@ -37,7 +37,9 @@ import {
   metadataStore,
   fileInfoStore,
   FileInfo,
+  provisionalTorrentHash,
 } from '../../debrid/index.js';
+import { QBITTORRENT_SERVICE } from '../../utils/constants.js';
 import {
   processTorrents,
   processNZBs,
@@ -261,11 +263,34 @@ export abstract class BaseDebridAddon<T extends BaseDebridConfig> {
       ];
     }
 
-    const torrentsToDownload = filterUnprocessedTorrentsPreDownload(
+    const hashlessTorrents = filterUnprocessedTorrentsPreDownload(
       torrentResults.filter((t) => !t.hash && t.downloadUrl),
       searchMetadata
     );
     torrentResults = torrentResults.filter((t) => t.hash);
+
+    // qBittorrent adds torrents by URL and learns the infohash from the add
+    // itself, so hashless results headed there skip the grabber and carry a
+    // provisional stand-in hash instead. A lazy background grab still runs,
+    // later searches upgrade to the real hash from the cache.
+    const urlCapable = this.getTorrentServices().some(
+      (s) => s.id === QBITTORRENT_SERVICE
+    );
+    if (urlCapable && hashlessTorrents.length > 0) {
+      for (const torrent of hashlessTorrents) {
+        torrentResults.push({
+          ...torrent,
+          hash: provisionalTorrentHash(torrent.downloadUrl!),
+          hashProvisional: true,
+        });
+        void TorrentGrabber.getMetadata(torrent);
+      }
+      this.logger.info(
+        `Passed ${hashlessTorrents.length} hashless torrents to qbittorrent by URL`
+      );
+    }
+
+    const torrentsToDownload = urlCapable ? [] : hashlessTorrents;
     if (torrentsToDownload.length > 0) {
       this.logger.info(
         `Fetching metadata for ${torrentsToDownload.length} torrents`
