@@ -305,9 +305,22 @@ export class QBittorrentService implements TorrentDebridService {
     // are private trackers and DHT-announcing their infohash is a ban
     // offense, so a provisional result is treated as private throughout.
     const provisional = playbackInfo.hashProvisional === true;
+    if (provisional && !playbackInfo.downloadUrl) {
+      throw qbError(
+        'STORE_MAGNET_INVALID',
+        'A hashless result without a torrent URL cannot be added'
+      );
+    }
+    // One wall-clock budget shared by the grab and both wait loops.
+    const deadline = Date.now() + this.options.maxWaitTime;
     let hash = playbackInfo.hash.toLowerCase();
-    let privateTorrent = playbackInfo.private === true;
-    if (provisional && playbackInfo.downloadUrl) {
+    // Provisional results come from tracker .torrent URLs. Announce them
+    // only through qBittorrent itself: DHT-announcing their infohash from
+    // anywhere else (the magnet-first fetcher, a fallback magnet) is a ban
+    // offense, so every provisional result is treated as private no
+    // matter what the info dict says.
+    let privateTorrent = provisional || playbackInfo.private === true;
+    if (provisional) {
       const metadata = await TorrentGrabber.getMetadataEager({
         type: 'torrent',
         title: playbackInfo.title ?? '',
@@ -322,15 +335,7 @@ export class QBittorrentService implements TorrentDebridService {
         );
       }
       hash = metadata.hash.toLowerCase();
-      // Provisional results come from tracker .torrent URLs. Announce them
-      // only through qBittorrent itself: DHT-announcing their infohash from
-      // anywhere else (the magnet-first fetcher, a fallback magnet) is a ban
-      // offense, so every provisional result is treated as private no
-      // matter what the info dict says.
-      privateTorrent = true;
     }
-    // One wall-clock budget shared by both wait loops.
-    const deadline = Date.now() + this.options.maxWaitTime;
 
     await DebridFailureCache.check(this.serviceName, 'torrent', hash);
 
