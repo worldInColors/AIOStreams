@@ -358,6 +358,16 @@ export class QBittorrentClient {
       // FormData carries its own multipart content type, the URL-encoded
       // header would break the boundary.
       const isFormData = options.body instanceof FormData;
+      if (
+        !isFormData &&
+        Object.prototype.toString.call(options.body) === '[object FormData]'
+      ) {
+        // A foreign FormData would serialize to "[object FormData]" and
+        // qBittorrent would reject the call, fail loudly instead.
+        throw new Error(
+          'qBittorrent client received a FormData from outside the undici package'
+        );
+      }
       if (options.body !== undefined && !isFormData) {
         headers['content-type'] = 'application/x-www-form-urlencoded';
       }
@@ -642,6 +652,12 @@ export class QBittorrentClient {
       });
       // Drain the body so the connection is released.
       await response.body?.cancel().catch(() => {});
+      if (!response.ok && response.status !== 409) {
+        logger.warn(
+          { status: response.status },
+          'qBittorrent rejected the torrent file upload'
+        );
+      }
       return response.ok || response.status === 409;
     } catch (error) {
       if (signal?.aborted) throw error;

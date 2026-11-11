@@ -213,6 +213,9 @@ interface BaseFile {
   size: number;
   index?: number;
   indexer?: string;
+  /** The indexer's own id for this result, carried through to the
+   * resolve-time grab so both use one cache key. */
+  guid?: string;
   seeders?: number;
   group?: string;
   parsedMediaInfo?: ParsedMediaInfo;

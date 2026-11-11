@@ -14,6 +14,26 @@ import pLimit from 'p-limit';
 
 const logger = createLogger('torrent');
 
+// Recently failed grabs, keyed like the cache. A dead or rate-limited
+// download URL must not be re-fetched on every click and failover attempt.
+const failedGrabs = new Map<string, number>();
+const FAILED_GRAB_TTL_MS = 60_000;
+
+// Small per-host concurrency cap for .torrent grabs, separate from the
+// shared background fetch limiter so a resolve never queues behind it.
+const hostGrabLimits = new Map<string, ReturnType<typeof pLimit>>();
+const HOST_GRAB_CONCURRENCY = 2;
+
+function hostGrabLimit(url: string): ReturnType<typeof pLimit> {
+  const host = new URL(url).host;
+  let limit = hostGrabLimits.get(host);
+  if (!limit) {
+    limit = pLimit(HOST_GRAB_CONCURRENCY);
+    hostGrabLimits.set(host, limit);
+  }
+  return limit;
+}
+
 interface TorrentMetadata {
   hash: string;
   files: DebridFile[];
@@ -134,10 +154,12 @@ export class TorrentGrabber {
    * Eager variant for resolve time: waits for the (single-flighted) fetch
    * instead of returning undefined on a cold lazy cache. Deliberately NOT
    * run through the shared fetch limiter, a resolve must not queue behind
-   * the background search-time warm grabs.
+   * the background search-time warm grabs. `timeoutMs` bounds the grab to
+   * the caller's remaining budget.
    */
   static async getMetadataEager(
-    torrent: UnprocessedTorrent
+    torrent: UnprocessedTorrent,
+    timeoutMs?: number
   ): Promise<TorrentMetadata | undefined> {
     const url = torrent.downloadUrl;
     if (!url) return undefined;
@@ -145,35 +167,58 @@ export class TorrentGrabber {
       torrent.guid && torrent.indexer
         ? `${torrent.indexer}:${torrent.guid}`
         : url;
+    const blockedUntil = failedGrabs.get(key);
+    if (blockedUntil !== undefined && blockedUntil > Date.now()) {
+      logger.debug(
+        `Skipping metadata fetch for ${makeUrlLogSafe(url)}, it failed recently`
+      );
+      return undefined;
+    }
     try {
-      return await this.#cache.fetch(key, () => this.#fetchMetadata(torrent));
+      return await this.#cache.fetch(key, () =>
+        this.#fetchMetadata(torrent, 0, timeoutMs)
+      );
     } catch (error: any) {
       logger.warn(
         `Failed to fetch metadata for ${makeUrlLogSafe(url)}: ${error.message}`
       );
+      failedGrabs.set(key, Date.now() + FAILED_GRAB_TTL_MS);
+      if (failedGrabs.size > 500) {
+        const now = Date.now();
+        for (const [k, until] of failedGrabs) {
+          if (until <= now) failedGrabs.delete(k);
+        }
+      }
       return undefined;
     }
   }
 
   static async #fetchMetadata(
     torrent: UnprocessedTorrent,
-    redirectCount: number = 0
+    redirectCount: number = 0,
+    timeoutMs?: number
   ): Promise<TorrentMetadata> {
     const { downloadUrl } = torrent;
     if (!downloadUrl) throw new Error('Download URL must be provided.');
 
-    const timeout = appConfig.builtins.getTorrent.lazily
+    const configuredTimeout = appConfig.builtins.getTorrent.lazily
       ? 30000
       : appConfig.builtins.getTorrent.timeout;
+    const timeout =
+      timeoutMs !== undefined
+        ? Math.min(timeoutMs, configuredTimeout)
+        : configuredTimeout;
     const start = Date.now();
 
-    const response = await makeRequest(downloadUrl, {
-      timeout,
-      // User-agent comes from a `[torrent_grabs]` (or per-host) entry in
-      // REQUEST_HEADER_OVERRIDES, applied inside makeRequest.
-      context: 'torrent_grabs',
-      rawOptions: { redirect: 'manual' },
-    });
+    const response = await hostGrabLimit(downloadUrl)(() =>
+      makeRequest(downloadUrl, {
+        timeout,
+        // User-agent comes from a `[torrent_grabs]` (or per-host) entry in
+        // REQUEST_HEADER_OVERRIDES, applied inside makeRequest.
+        context: 'torrent_grabs',
+        rawOptions: { redirect: 'manual' },
+      })
+    );
 
     let metadata: TorrentMetadata;
 
@@ -188,10 +233,17 @@ export class TorrentGrabber {
         if (redirectCount >= 3) {
           throw new Error(`Too many redirects: ${makeUrlLogSafe(redirectUrl)}`);
         }
+        // Follow the redirect target, some indexers answer with the
+        // tracker's own .torrent URL instead of the file.
+        const nextUrl = new URL(redirectUrl, downloadUrl).toString();
         logger.debug(
-          `Invalid magnet URL in redirect: ${makeUrlLogSafe(redirectUrl)}, retrying...`
+          `Following torrent download redirect to ${makeUrlLogSafe(nextUrl)}`
         );
-        return this.#fetchMetadata(torrent, redirectCount + 1);
+        return this.#fetchMetadata(
+          { ...torrent, downloadUrl: nextUrl },
+          redirectCount + 1,
+          timeoutMs
+        );
       }
 
       const sources = extractTrackersFromMagnet(redirectUrl);

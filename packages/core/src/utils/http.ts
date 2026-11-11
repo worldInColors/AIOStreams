@@ -13,6 +13,7 @@ import {
   BodyInit,
   Dispatcher,
   fetch,
+  FormData,
   Headers,
   HeadersInit,
   ProxyAgent,
@@ -268,6 +269,21 @@ export async function makeRequest(url: string, options: RequestOptions) {
   const { redirect: redirectMode, ...rawOptions } = options.rawOptions ?? {};
   let method = options.method ?? 'GET';
   let body = options.body;
+  // A FormData from another realm (the global class, not this package's)
+  // fails the body check inside the package fetch and posts garbage.
+  // Serialize such forms once, through the global Response which knows
+  // the global class, and carry the multipart content-type manually.
+  if (
+    body !== undefined &&
+    Object.prototype.toString.call(body) === '[object FormData]' &&
+    !(body instanceof FormData)
+  ) {
+    const serialized = new globalThis.Response(body);
+    const bytes = Buffer.from(await serialized.arrayBuffer());
+    const contentType = serialized.headers.get('content-type');
+    if (contentType) headers.set('content-type', contentType);
+    body = bytes;
+  }
 
   // Redirects are followed manually so the proxy ruleset, override headers,
   // URL rewrites and internal-secret handling are re-evaluated on every hop.

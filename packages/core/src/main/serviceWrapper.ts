@@ -407,6 +407,8 @@ async function buildDebridStreams(
             type: 'torrent',
             downloadUrl: result.downloadUrl,
             hashProvisional: result.hashProvisional,
+            guid: result.guid,
+            indexer: result.indexer,
             title: result.title,
             hash: result.hash,
             private: result.private,

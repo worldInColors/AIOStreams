@@ -272,26 +272,21 @@ export abstract class BaseDebridAddon<T extends BaseDebridConfig> {
     // qBittorrent accepts torrents by URL and resolves the infohash itself,
     // so hashless results reach it immediately under a provisional stand-in
     // hash, the real one appears at resolve time from the cached .torrent
-    // grab. Other services need a real hash, so they never see these.
-    const urlServices = this
-      .getTorrentServices()
-      .filter((s) => s.id === QBITTORRENT_SERVICE);
-    const provisionalTorrents: Torrent[] = [];
-    if (urlServices.length > 0 && hashlessTorrents.length > 0) {
-      for (const torrent of hashlessTorrents) {
-        provisionalTorrents.push({
-          ...torrent,
-          hash: provisionalTorrentHash(torrent.downloadUrl!),
-          hashProvisional: true,
-        } as Torrent);
-      }
-      this.logger.info(
-        `Passed ${provisionalTorrents.length} hashless torrents to qbittorrent by URL`
-      );
-    }
+    // grab. Other services need a real hash, so they only see these once
+    // the grab enriched them.
+    const torrentServices = this.getTorrentServices();
+    const urlServices = torrentServices.filter(
+      (s) => s.id === QBITTORRENT_SERVICE
+    );
+    const otherTorrentServices = torrentServices.filter(
+      (s) => s.id !== QBITTORRENT_SERVICE
+    );
 
+    // Warm-grab hashless results only when another torrent service needs
+    // the real hash, a qBittorrent-only setup grabs at resolve time instead.
     const torrentsToDownload =
-      urlServices.length > 0 ? [] : hashlessTorrents;
+      otherTorrentServices.length > 0 ? hashlessTorrents : [];
+    let enrichedResults: Torrent[] = [];
     if (torrentsToDownload.length > 0) {
       this.logger.info(
         `Fetching metadata for ${torrentsToDownload.length} torrents`
@@ -315,7 +310,7 @@ export abstract class BaseDebridAddon<T extends BaseDebridConfig> {
         }
       });
 
-      const enrichedResults = (await Promise.all(metadataPromises)).filter(
+      enrichedResults = (await Promise.all(metadataPromises)).filter(
         (r): r is Torrent => r !== null
       );
       this.logger.info(
@@ -324,7 +319,26 @@ export abstract class BaseDebridAddon<T extends BaseDebridConfig> {
       torrentResults = [...torrentResults, ...enrichedResults];
     }
 
-    const torrentServices = this.getTorrentServices();
+    // Provisional entries cover only what still has no hash, enriched ones
+    // already ride the real-hash path to every service.
+    const enrichedUrls = new Set(
+      enrichedResults.map((t) => t.downloadUrl).filter(Boolean)
+    );
+    const provisionalTorrents: Torrent[] = [];
+    if (urlServices.length > 0 && hashlessTorrents.length > 0) {
+      for (const torrent of hashlessTorrents) {
+        if (enrichedUrls.has(torrent.downloadUrl)) continue;
+        provisionalTorrents.push({
+          ...torrent,
+          hash: provisionalTorrentHash(torrent.downloadUrl!),
+          hashProvisional: true,
+        } as Torrent);
+      }
+      this.logger.info(
+        `Passed ${provisionalTorrents.length} hashless torrents to qbittorrent by URL`
+      );
+    }
+
     const nzbServices = this.getNzbServices();
 
     if (torrentServices.length === 0 && torrentResults.length > 0) {
@@ -356,28 +370,57 @@ export abstract class BaseDebridAddon<T extends BaseDebridConfig> {
 
     const [processedTorrents, processedNzbs] = await Promise.all([
       (async () => {
-        const real = await processTorrents(
-          torrentResults as Torrent[],
-          torrentServices,
-          id,
-          searchMetadata,
-          this.clientIp,
-          this.userData.checkOwned
-        );
-        if (provisionalTorrents.length === 0) return real;
-        // Provisional entries only ever go to the URL-capable services.
-        const provisional = await processTorrents(
-          provisionalTorrents,
-          urlServices,
-          id,
-          searchMetadata,
-          this.clientIp,
-          this.userData.checkOwned
+        // Provisional entries only ever go to the URL-capable services,
+        // in parallel with the real-hash pass.
+        const [real, provisional] = await Promise.all([
+          processTorrents(
+            torrentResults as Torrent[],
+            torrentServices,
+            id,
+            searchMetadata,
+            this.clientIp,
+            this.userData.checkOwned
+          ),
+          processTorrents(
+            provisionalTorrents,
+            urlServices,
+            id,
+            searchMetadata,
+            this.clientIp,
+            this.userData.checkOwned
+          ),
+        ]);
+        // qBittorrent appears in both passes, sum its timings and keep one
+        // error per service so an unreachable client is not reported twice.
+        const serviceTimings = { ...real.serviceTimings };
+        for (const [service, timing] of Object.entries(
+          provisional.serviceTimings
+        )) {
+          const existing = serviceTimings[service];
+          serviceTimings[service] = existing
+            ? {
+                magnetCheckMs:
+                  existing.magnetCheckMs + timing.magnetCheckMs,
+                processingMs: existing.processingMs + timing.processingMs,
+                totalMs: existing.totalMs + timing.totalMs,
+                cachedCount: existing.cachedCount + timing.cachedCount,
+                uncachedCount: existing.uncachedCount + timing.uncachedCount,
+                torrentsIn: existing.torrentsIn + timing.torrentsIn,
+              }
+            : timing;
+        }
+        const failedServices = new Set(
+          real.errors.map((error) => error.serviceId)
         );
         return {
           results: [...real.results, ...provisional.results],
-          errors: [...real.errors, ...provisional.errors],
-          serviceTimings: { ...real.serviceTimings, ...provisional.serviceTimings },
+          errors: [
+            ...real.errors,
+            ...provisional.errors.filter(
+              (error) => !failedServices.has(error.serviceId)
+            ),
+          ],
+          serviceTimings,
         };
       })(),
       processNZBs(
@@ -924,6 +967,8 @@ export abstract class BaseDebridAddon<T extends BaseDebridConfig> {
             type: 'torrent',
             downloadUrl: torrentOrNzb.downloadUrl,
             hashProvisional: torrentOrNzb.hashProvisional,
+            guid: torrentOrNzb.guid,
+            indexer: torrentOrNzb.indexer,
             title: torrentOrNzb.title,
             hash: torrentOrNzb.hash,
             private: torrentOrNzb.private,

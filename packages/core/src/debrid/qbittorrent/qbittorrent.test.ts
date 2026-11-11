@@ -4,16 +4,20 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { getGlobalDispatcher, MockAgent, setGlobalDispatcher } from 'undici';
 import { settingsStore } from '../../config/index.js';
 import { SettingsRepository } from '../../db/repositories/settings.js';
 import { FeatureControl } from '../../utils/feature.js';
+import { makeRequest } from '../../utils/index.js';
 import { TorrentGrabber } from '../../utils/torrent.js';
 import { getEnvironmentServiceDetails } from '../../utils/config.js';
 import { toUrlSafeBase64 } from '../../utils/general.js';
 import { DebridError, PlaybackInfo } from '../base.js';
 import {
   parseQbittorrentCredential,
+  QBittorrentClient,
   QbittorrentFile,
   QBITTORRENT_TAG,
 } from './client.js';
@@ -899,6 +903,51 @@ describe('QBittorrentService resolve', () => {
     assert.match(link ?? '', /\/api\/v1\/qbittorrent\/stream\//);
   });
 
+  test('a provisional hash with no file index selects from the pack', async (t) => {
+    // Production shape: hashless results carry no file list, so the
+    // playback info arrives without a fileIndex and the file is picked
+    // from qBittorrent's real file list after the add.
+    const realHash = hashOf('14');
+    const contentPath = makeContent(t, [
+      { name: 'show.s01e01.mkv', size: 2000 },
+      { name: 'show.s01e02.mkv', size: 2000 },
+    ]);
+    const original = TorrentGrabber.getMetadataEager;
+    TorrentGrabber.getMetadataEager = async () => ({
+      hash: realHash,
+      files: [],
+      sources: [],
+    });
+    t.after(() => {
+      TorrentGrabber.getMetadataEager = original;
+    });
+    await withMockedWebUi(t, {
+      login: true,
+      intercepts: dataIntercepts(
+        realHash,
+        { ...torrentFixture(realHash, 'downloading'), content_path: contentPath, tags: QBITTORRENT_TAG },
+        [
+          { ...fileFixture(0, 'show.s01e01.mkv', 2000), piece_range: [0, 3] },
+          { ...fileFixture(1, 'show.s01e02.mkv', 2000), piece_range: [4, 7] },
+        ],
+        [2, 2, 2, 2, 2, 2, 2, 2]
+      ),
+    });
+    const link = await service().resolve(
+      {
+        type: 'torrent',
+        hash: hashOf('q'),
+        hashProvisional: true,
+        downloadUrl: 'http://indexer.example/download?key=pass',
+        title: 'Show S01 1080p',
+        sources: [],
+      },
+      'show.s01e02.mkv',
+      true
+    );
+    assert.match(link ?? '', /\/api\/v1\/qbittorrent\/stream\//);
+  });
+
   test('a provisional hash missing from qBittorrent adds by URL, never a magnet', async (t) => {
     const realHash = hashOf('12');
     let addBody = '';
@@ -1210,3 +1259,95 @@ async function withMockedWebUi(
   }
   return agent;
 }
+
+describe('multipart adds over a real socket', () => {
+  // The mock WebUI never inspects request bodies, so the class-realm bug
+  // (a global FormData posted through the package undici fetch arrives
+  // malformed and qB answers 400) was invisible to every mocked test.
+  // These run against a real listener and assert the wire format.
+  interface Captured {
+    path: string | undefined;
+    contentType: string | string[] | undefined;
+    body: Buffer;
+  }
+
+  async function captureServer(
+    t: { after: (fn: () => void) => void },
+    addStatus: number
+  ): Promise<{ url: string; requests: Captured[] }> {
+    const requests: Captured[] = [];
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      req.on('end', () => {
+        requests.push({
+          path: req.url,
+          contentType: req.headers['content-type'],
+          body: Buffer.concat(chunks),
+        });
+        if (req.url === '/api/v2/auth/login') {
+          res.writeHead(204, { 'set-cookie': 'SID=sock' });
+          res.end();
+          return;
+        }
+        res.writeHead(addStatus, { 'content-type': 'text/plain' });
+        res.end(addStatus === 200 ? 'Ok.' : '');
+      });
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve)
+    );
+    const { port } = server.address() as AddressInfo;
+    t.after(() => {
+      server.closeAllConnections();
+      server.close();
+    });
+    return { url: `http://127.0.0.1:${port}`, requests };
+  }
+
+  test('addTorrentFile posts a parseable multipart body', async (t) => {
+    const { url, requests } = await captureServer(t, 200);
+    const client = new QBittorrentClient(
+      parseQbittorrentCredential(credentialToken(url))
+    );
+    const dir = mkdtempSync(join(tmpdir(), 'aiostreams-mp-'));
+    const torrentPath = join(dir, 'grab.torrent');
+    const bytes = Buffer.from('d4:infod4:name4:testee');
+    writeFileSync(torrentPath, bytes);
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const ok = await client.addTorrentFile(torrentPath);
+    assert.equal(ok, true);
+    const add = requests.find((r) => r.path === '/api/v2/torrents/add');
+    assert.ok(add, 'torrents/add was called');
+    assert.match(
+      String(add.contentType),
+      /^multipart\/form-data; boundary=/
+    );
+    const body = add.body.toString('latin1');
+    assert.ok(body.includes('name="torrents"'));
+    assert.ok(body.includes('filename="head.torrent"'));
+    assert.ok(add.body.includes(bytes), 'body carries the torrent bytes');
+  });
+
+  test('makeRequest serializes a global FormData as multipart', async (t) => {
+    const { url, requests } = await captureServer(t, 200);
+    const form = new FormData();
+    form.append('openai_base_url', 'http://provider.example');
+    form.append('model_name', 'test-model');
+    const response = await makeRequest(`${url}/api/v2/torrents/add`, {
+      method: 'POST',
+      timeout: 5_000,
+      body: form as unknown as Parameters<typeof makeRequest>[1]['body'],
+    });
+    assert.equal(response.status, 200);
+    const add = requests.find((r) => r.path === '/api/v2/torrents/add');
+    assert.ok(add, 'the add endpoint was called');
+    assert.match(
+      String(add.contentType),
+      /^multipart\/form-data; boundary=/
+    );
+    const body = add.body.toString('utf8');
+    assert.ok(body.includes('openai_base_url'));
+    assert.ok(body.includes('test-model'));
+  });
+});

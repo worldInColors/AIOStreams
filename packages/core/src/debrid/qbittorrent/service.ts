@@ -324,15 +324,22 @@ export class QBittorrentService implements TorrentDebridService {
     // anywhere else (the magnet-first fetcher, a fallback magnet) is a ban
     // offense, so every provisional result is treated as private no
     // matter what the info dict says.
-    let privateTorrent = provisional || playbackInfo.private === true;
+    const privateTorrent = provisional || playbackInfo.private === true;
     if (provisional) {
-      const metadata = await TorrentGrabber.getMetadataEager({
-        type: 'torrent',
-        title: playbackInfo.title ?? '',
-        size: 0,
-        downloadUrl: playbackInfo.downloadUrl,
-        sources: playbackInfo.sources,
-      });
+      // The grab shares the resolve budget, it must not spend more than
+      // what is left of it.
+      const metadata = await TorrentGrabber.getMetadataEager(
+        {
+          type: 'torrent',
+          title: playbackInfo.title ?? '',
+          size: 0,
+          downloadUrl: playbackInfo.downloadUrl,
+          sources: playbackInfo.sources,
+          guid: playbackInfo.guid,
+          indexer: playbackInfo.indexer,
+        },
+        Math.max(1_000, deadline - Date.now())
+      );
       if (!metadata?.hash) {
         throw qbError(
           'STORE_MAGNET_INVALID',
@@ -341,6 +348,7 @@ export class QBittorrentService implements TorrentDebridService {
       }
       hash = metadata.hash.toLowerCase();
       grabbedTorrentB64 = metadata.torrentB64;
+      this.throwIfAborted(signal);
     }
 
     await DebridFailureCache.check(this.serviceName, 'torrent', hash);
@@ -383,9 +391,10 @@ export class QBittorrentService implements TorrentDebridService {
     }
 
     if (!torrent) {
+      this.throwIfAborted(signal);
       const addTorrent = async (url: string) => {
         try {
-          await this.client.addTorrentUrl(url);
+          await this.client.addTorrentUrl(url, signal);
         } catch (error) {
           // 4.x answers a duplicate add with 200 "Fails."
           if (
@@ -408,6 +417,12 @@ export class QBittorrentService implements TorrentDebridService {
           grabbedTorrentB64 !== undefined &&
           (await this.addGrabbedTorrent(grabbedTorrentB64, signal));
         if (!added) {
+          if (grabbedTorrentB64 !== undefined) {
+            logger.warn(
+              'adding the grabbed torrent bytes failed, falling back to the indexer URL'
+            );
+          }
+          this.throwIfAborted(signal);
           logger.debug(
             `Adding torrent from ${makeUrlLogSafe(playbackInfo.downloadUrl)}`
           );
@@ -445,7 +460,8 @@ export class QBittorrentService implements TorrentDebridService {
       // second fetcher on top. Provisional (URL-indexer) results skip the
       // export fetch entirely, it stop/starts the torrent against its
       // trackers for a head the accelerator cannot safely fetch anyway.
-      freshAdd && !magnetFirstAttempted && !provisional
+      freshAdd && !magnetFirstAttempted && !provisional,
+      privateTorrent
     );
     if (!readiness) return undefined;
     const { file, filePath } = readiness;
@@ -485,7 +501,10 @@ export class QBittorrentService implements TorrentDebridService {
     try {
       writeFileSync(path, Buffer.from(torrentB64, 'base64'));
       return await this.client.addTorrentFile(path, signal);
-    } catch {
+    } catch (error) {
+      // A losing failover attempt must not fall through to the URL add,
+      // that would add a torrent the user is no longer asking for.
+      if (signal?.aborted) throw error;
       return false;
     } finally {
       rmSync(workDir, { recursive: true, force: true });
@@ -515,7 +534,8 @@ export class QBittorrentService implements TorrentDebridService {
     cacheAndPlay: boolean,
     signal: AbortSignal | undefined,
     deadline: number,
-    fetchHead = false
+    fetchHead = false,
+    privateTorrent = false
   ): Promise<
     | {
         file: { index: number; name: string; size: number };
@@ -532,6 +552,9 @@ export class QBittorrentService implements TorrentDebridService {
     let torrentMisses = 0;
     let lastState = torrent.state;
     let attempt = 0;
+    // Frontier of the last disk scan, the next scan resumes slightly
+    // before it instead of re-reading the whole head every poll.
+    let diskScanned = 0;
     while (Date.now() < deadline) {
       this.throwIfAborted(signal);
       attempt++;
@@ -699,16 +722,29 @@ export class QBittorrentService implements TorrentDebridService {
           let dataReady =
             availability.complete ||
             availability.contiguousFrom(0) >= threshold;
-          // Both the flush probe and the disk frontier run on the real
+          // The flush probe and any disk frontier scan run on the real
           // on-disk path (the .!qB variant, symlinks), the reported path
           // alone can name a file that never opens.
           const onDisk = await resolveOnDiskVariant(filePath);
           const flushed = onDisk
             ? await this.hasFlushedHead(onDisk, file.size)
             : false;
-          const diskFrontier = onDisk
-            ? await diskContiguousBytes(onDisk, 0, threshold + 64 * 1024)
-            : 0;
+          // A chunk counts as soon as any byte in it is non-zero, so the
+          // frontier can overshoot by up to one chunk. Require a chunk of
+          // margin so the real bytes still cover the threshold.
+          const diskNeeded = Math.min(threshold + 64 * 1024, file.size);
+          let diskFrontier: number | undefined;
+          if (!dataReady && onDisk && flushed) {
+            const from = Math.max(0, diskScanned - 64 * 1024);
+            diskFrontier =
+              from +
+              (await diskContiguousBytes(
+                onDisk,
+                from,
+                Math.min(threshold + 128 * 1024, file.size) - from
+              ));
+            diskScanned = diskFrontier;
+          }
           // The export-mode fetch announces the torrent from a second
           // peer, never do that for private torrents (whitelists and
           // double-announce rules punish exactly that).
@@ -717,7 +753,7 @@ export class QBittorrentService implements TorrentDebridService {
             !flushed &&
             fetchHead &&
             !headFetched &&
-            playbackInfo.private !== true &&
+            !privateTorrent &&
             (await headFetcherAvailable())
           ) {
             headFetched = true;
@@ -733,7 +769,7 @@ export class QBittorrentService implements TorrentDebridService {
               return { file, filePath };
             }
           }
-          if (!dataReady && flushed && diskFrontier >= threshold) {
+          if (!dataReady && diskFrontier !== undefined && diskFrontier >= diskNeeded) {
             // pieceStates lags on busy clients, trust the bytes.
             dataReady = true;
           }

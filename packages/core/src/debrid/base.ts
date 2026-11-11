@@ -251,6 +251,10 @@ const TorrentInfoSchema = BaseFileInfoSchema.extend({
   /** The hash is a stand-in for a .torrent URL result, the service
    * discovers the real infohash when it adds the torrent. */
   hashProvisional: z.boolean().optional(),
+  /** Identifies the indexer result, the resolve-time grab uses the same
+   * cache key as the background metadata fetch so both share one entry. */
+  guid: z.string().optional(),
+  indexer: z.string().optional(),
   private: z.boolean().optional(),
   sources: z.array(z.string()),
   type: z.literal('torrent'),
