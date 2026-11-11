@@ -8,6 +8,7 @@ import { getGlobalDispatcher, MockAgent, setGlobalDispatcher } from 'undici';
 import { settingsStore } from '../../config/index.js';
 import { SettingsRepository } from '../../db/repositories/settings.js';
 import { FeatureControl } from '../../utils/feature.js';
+import { TorrentGrabber } from '../../utils/torrent.js';
 import { getEnvironmentServiceDetails } from '../../utils/config.js';
 import { toUrlSafeBase64 } from '../../utils/general.js';
 import { DebridError, PlaybackInfo } from '../base.js';
@@ -858,6 +859,70 @@ describe('QBittorrentService resolve', () => {
     assert.equal(prioBodies.length, 1);
     assert.match(prioBodies[0], /id=0/);
     assert.match(prioBodies[0], /priority=7/);
+  });
+
+  test('a provisional hash resolves through the grabbed torrent hash', async (t) => {
+    const realHash = hashOf('7');
+    const pseudoHash = hashOf('p');
+    const contentPath = makeContent(t, [{ name: 'video.mkv', size: 2000 }]);
+    const original = TorrentGrabber.getMetadataEager;
+    TorrentGrabber.getMetadataEager = async () => ({
+      hash: realHash,
+      files: [],
+      sources: [],
+    });
+    t.after(() => {
+      TorrentGrabber.getMetadataEager = original;
+    });
+    await withMockedWebUi(t, {
+      login: true,
+      intercepts: dataIntercepts(
+        realHash,
+        { ...torrentFixture(realHash, 'downloading'), content_path: contentPath, tags: QBITTORRENT_TAG },
+        [{ ...fileFixture(0, 'video.mkv', 2000), piece_range: [0, 7] }],
+        [2, 2, 2, 2, 2, 2, 2, 2]
+      ),
+    });
+    const link = await service().resolve(
+      {
+        type: 'torrent',
+        hash: pseudoHash,
+        hashProvisional: true,
+        downloadUrl: 'http://indexer.example/download?key=pass',
+        title: 'Some Release 1080p',
+        sources: [],
+        fileIndex: 0,
+      },
+      'video.mkv',
+      true
+    );
+    assert.match(link ?? '', /\/api\/v1\/qbittorrent\/stream\//);
+  });
+
+  test('a provisional hash whose grab fails refuses instead of magneting', async (t) => {
+    const original = TorrentGrabber.getMetadataEager;
+    TorrentGrabber.getMetadataEager = async () => undefined;
+    t.after(() => {
+      TorrentGrabber.getMetadataEager = original;
+    });
+    await withMockedWebUi(t, { login: true, intercepts: [] });
+    await assert.rejects(
+      service().resolve(
+        {
+          type: 'torrent',
+          hash: hashOf('p'),
+          hashProvisional: true,
+          downloadUrl: 'http://indexer.example/download?key=pass',
+          title: 'Some Release 1080p',
+          sources: [],
+          fileIndex: 0,
+        },
+        'video.mkv',
+        true
+      ),
+      (error: unknown) =>
+        error instanceof DebridError && error.code === 'STORE_MAGNET_INVALID'
+    );
   });
 
   test('restores a skipped selected file in an adopted torrent', async (t) => {

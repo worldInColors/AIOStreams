@@ -16,10 +16,12 @@ import {
 } from '../base.js';
 import {
   Torrent,
+  UnprocessedTorrent,
   parseFileNames,
   selectFileInTorrentOrNZB,
   selectableFileNames,
 } from '../utils.js';
+import { TorrentGrabber } from '../../utils/torrent.js';
 import {
   appConfig,
   ServiceId,
@@ -85,15 +87,6 @@ const SEEDED_STATES = new Set([
 ]);
 
 const MAGNET_HASH = /urn:btih:([a-f0-9]{40})/i;
-
-/**
- * Real infohashes learned from .torrent URL adds, keyed by the provisional
- * stand-in so repeat clicks skip the discovery diff. In-process only, a
- * restart just rediscovers.
- */
-const discoveredHashes = new Map<string, { hash: string; at: number }>();
-const DISCOVERED_HASH_TTL_MS = 60 * 60 * 1000;
-const MAX_DISCOVERED_HASHES = 512;
 
 const BARE_HASH = /^[a-f0-9]{40}$|^[a-f0-9]{64}$/;
 
@@ -305,17 +298,30 @@ export class QBittorrentService implements TorrentDebridService {
     cacheAndPlay: boolean,
     signal?: AbortSignal
   ): Promise<string | undefined> {
-    // A provisional hash stands in for a .torrent URL result, the real
-    // infohash only exists once qBittorrent has fetched it.
+    // A provisional hash stands in for a .torrent URL result. Resolve it
+    // from the grabbed .torrent now: the exact infohash and private flag
+    // come from the info dict, never from a magnet. Most of these results
+    // are private trackers and DHT-announcing their infohash is a ban
+    // offense, so a provisional result is treated as private throughout.
     const provisional = playbackInfo.hashProvisional === true;
     let hash = playbackInfo.hash.toLowerCase();
-    let hashUnknown = provisional;
-    if (provisional) {
-      const known = discoveredHashes.get(hash);
-      if (known && Date.now() - known.at < DISCOVERED_HASH_TTL_MS) {
-        hash = known.hash;
-        hashUnknown = false;
+    let privateTorrent = playbackInfo.private === true;
+    if (provisional && playbackInfo.downloadUrl) {
+      const metadata = await TorrentGrabber.getMetadataEager({
+        type: 'torrent',
+        title: playbackInfo.title ?? '',
+        size: 0,
+        downloadUrl: playbackInfo.downloadUrl,
+        sources: playbackInfo.sources,
+      });
+      if (!metadata?.hash) {
+        throw qbError(
+          'STORE_MAGNET_INVALID',
+          'Could not fetch the torrent from the indexer URL'
+        );
       }
+      hash = metadata.hash.toLowerCase();
+      privateTorrent = privateTorrent || metadata.private === true;
     }
     // One wall-clock budget shared by both wait loops.
     const deadline = Date.now() + this.options.maxWaitTime;
@@ -329,43 +335,14 @@ export class QBittorrentService implements TorrentDebridService {
         ? await this.client.getTorrent(playbackInfo.serviceItemId.toLowerCase())
         : undefined) ?? (await this.client.getTorrent(hash));
 
-    if (!torrent && hashUnknown && playbackInfo.downloadUrl) {
-      // A .torrent URL result with no known infohash: add by URL and learn
-      // the hash from whichever tagged torrent qBittorrent creates.
-      torrent = await this.discoverByUrlAdd(
-        playbackInfo.downloadUrl,
-        playbackInfo.filename ?? playbackInfo.title,
-        signal,
-        deadline
-      );
-      if (!torrent) {
-        throw qbError(
-          'TIMEOUT',
-          'qBittorrent never received the torrent from the indexer URL'
-        );
-      }
-      discoveredHashes.set(playbackInfo.hash.toLowerCase(), {
-        hash: torrent.hash,
-        at: Date.now(),
-      });
-      if (discoveredHashes.size > MAX_DISCOVERED_HASHES) {
-        const oldest = discoveredHashes.keys().next().value;
-        if (oldest !== undefined) discoveredHashes.delete(oldest);
-      }
-      hash = torrent.hash;
-      hashUnknown = false;
-      freshAdd = true;
-    }
-
     if (
       !torrent &&
-      !hashUnknown &&
       cacheAndPlay &&
       // Magnet-first never touches private torrents, DHT-announcing a
       // private infohash breaks tracker rules and the metadata never arrives
       // without the passkey announce anyway. Anything with a downloadUrl
       // takes that branch below instead.
-      playbackInfo.private !== true &&
+      !privateTorrent &&
       !(
         playbackInfo.downloadUrl &&
         appConfig.builtins.debrid.useTorrentDownloadUrl
@@ -406,12 +383,19 @@ export class QBittorrentService implements TorrentDebridService {
       };
       if (
         playbackInfo.downloadUrl &&
-        appConfig.builtins.debrid.useTorrentDownloadUrl
+        (appConfig.builtins.debrid.useTorrentDownloadUrl || provisional)
       ) {
         logger.debug(
           `Adding torrent from ${makeUrlLogSafe(playbackInfo.downloadUrl)}`
         );
         await addTorrent(playbackInfo.downloadUrl);
+      } else if (provisional) {
+        // No URL add available and a provisional hash must never become a
+        // DHT-announced magnet.
+        throw qbError(
+          'STORE_MAGNET_INVALID',
+          'qBittorrent could not add this torrent URL'
+        );
       } else {
         await addTorrent(buildMagnet(playbackInfo, hash));
       }
@@ -434,8 +418,10 @@ export class QBittorrentService implements TorrentDebridService {
       signal,
       deadline,
       // A failed magnet-first attempt already spent its fetch budget, no
-      // second fetcher on top.
-      freshAdd && !magnetFirstAttempted
+      // second fetcher on top. Provisional (URL-indexer) results skip the
+      // export fetch entirely, it stop/starts the torrent against its
+      // trackers for a head the accelerator cannot safely fetch anyway.
+      freshAdd && !magnetFirstAttempted && !provisional
     );
     if (!readiness) return undefined;
     const { file, filePath } = readiness;
@@ -460,54 +446,6 @@ export class QBittorrentService implements TorrentDebridService {
     return `${appConfig.bootstrap.baseUrl}/api/v1/qbittorrent/stream/${encodeURIComponent(
       token
     )}/${encodeURIComponent(displayName)}`;
-  }
-
-  /**
-   * Add a .torrent URL whose infohash is unknown and find out which tagged
-   * torrent qBittorrent created from it, by diffing the tagged list around
-   * the add. A torrent added by an earlier attempt (a resolve that timed out
-   * after the add) shows no diff, so a name match is the fallback.
-   */
-  private async discoverByUrlAdd(
-    url: string,
-    nameHint: string | undefined,
-    signal: AbortSignal | undefined,
-    deadline: number
-  ): Promise<QbittorrentTorrent | undefined> {
-    const normalise = (value: string) =>
-      value.replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
-    const matchesHint = (name: string) => {
-      if (!nameHint) return false;
-      const a = normalise(name);
-      const b = normalise(nameHint);
-      return a === b || b.startsWith(a) || a.startsWith(b);
-    };
-    const before = new Set(
-      (await this.client.getTaggedTorrents(signal).catch(() => [])).map(
-        (t) => t.hash
-      )
-    );
-    try {
-      await this.client.addTorrentUrl(url, signal);
-    } catch (error) {
-      // A 4.x duplicate add answers 200 "Fails.", keep polling anyway.
-      if (!(error instanceof DebridError && error.code === 'STORE_MAGNET_INVALID')) {
-        throw error;
-      }
-    }
-    const until = Math.min(deadline, Date.now() + 15_000);
-    for (;;) {
-      this.throwIfAborted(signal);
-      const tagged = await this.client.getTaggedTorrents(signal).catch(() => []);
-      const fresh = tagged.find((t) => !before.has(t.hash));
-      if (fresh) return fresh;
-      const byName = tagged.find((t) => matchesHint(t.name));
-      if (byName) return byName;
-      if (Date.now() >= until) return undefined;
-      await sleep(this.options.pollInterval, undefined, { signal }).catch(
-        () => {}
-      );
-    }
   }
 
   private async waitForTorrent(

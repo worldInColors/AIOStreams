@@ -269,28 +269,32 @@ export abstract class BaseDebridAddon<T extends BaseDebridConfig> {
     );
     torrentResults = torrentResults.filter((t) => t.hash);
 
-    // qBittorrent adds torrents by URL and learns the infohash from the add
-    // itself, so hashless results headed there skip the grabber and carry a
-    // provisional stand-in hash instead. A lazy background grab still runs,
-    // later searches upgrade to the real hash from the cache.
-    const urlCapable = this.getTorrentServices().some(
-      (s) => s.id === QBITTORRENT_SERVICE
-    );
-    if (urlCapable && hashlessTorrents.length > 0) {
+    // qBittorrent accepts torrents by URL and resolves the infohash itself,
+    // so hashless results reach it immediately under a provisional stand-in
+    // hash, the real one appears at resolve time from the cached .torrent
+    // grab. Other services need a real hash, so they never see these.
+    const urlServices = this
+      .getTorrentServices()
+      .filter((s) => s.id === QBITTORRENT_SERVICE);
+    const provisionalTorrents: Torrent[] = [];
+    if (urlServices.length > 0 && hashlessTorrents.length > 0) {
       for (const torrent of hashlessTorrents) {
-        torrentResults.push({
+        provisionalTorrents.push({
           ...torrent,
           hash: provisionalTorrentHash(torrent.downloadUrl!),
           hashProvisional: true,
         } as Torrent);
-        void TorrentGrabber.getMetadata(torrent);
+        // Warm the grab cache in the background so later searches see the
+        // real hash. The grabber single-flights and limits itself.
+        TorrentGrabber.getMetadata(torrent).catch(() => {});
       }
       this.logger.info(
-        `Passed ${hashlessTorrents.length} hashless torrents to qbittorrent by URL`
+        `Passed ${provisionalTorrents.length} hashless torrents to qbittorrent by URL`
       );
     }
 
-    const torrentsToDownload = urlCapable ? [] : hashlessTorrents;
+    const torrentsToDownload =
+      urlServices.length > 0 ? [] : hashlessTorrents;
     if (torrentsToDownload.length > 0) {
       this.logger.info(
         `Fetching metadata for ${torrentsToDownload.length} torrents`
@@ -354,14 +358,31 @@ export abstract class BaseDebridAddon<T extends BaseDebridConfig> {
     }
 
     const [processedTorrents, processedNzbs] = await Promise.all([
-      processTorrents(
-        torrentResults as Torrent[],
-        torrentServices,
-        id,
-        searchMetadata,
-        this.clientIp,
-        this.userData.checkOwned
-      ),
+      (async () => {
+        const real = await processTorrents(
+          torrentResults as Torrent[],
+          torrentServices,
+          id,
+          searchMetadata,
+          this.clientIp,
+          this.userData.checkOwned
+        );
+        if (provisionalTorrents.length === 0) return real;
+        // Provisional entries only ever go to the URL-capable services.
+        const provisional = await processTorrents(
+          provisionalTorrents,
+          urlServices,
+          id,
+          searchMetadata,
+          this.clientIp,
+          this.userData.checkOwned
+        );
+        return {
+          results: [...real.results, ...provisional.results],
+          errors: [...real.errors, ...provisional.errors],
+          serviceTimings: { ...real.serviceTimings, ...provisional.serviceTimings },
+        };
+      })(),
       processNZBs(
         nzbResults,
         nzbServices.concat(
@@ -986,7 +1007,10 @@ export abstract class BaseDebridAddon<T extends BaseDebridConfig> {
           ? 'stremio-usenet'
           : torrentOrNzb.type,
       age: torrentOrNzb.age,
-      infoHash: torrentOrNzb.type === 'torrent' ? torrentOrNzb.hash : undefined,
+      infoHash:
+        torrentOrNzb.type === 'torrent' && !torrentOrNzb.hashProvisional
+          ? torrentOrNzb.hash
+          : undefined,
       fileIdx: torrentOrNzb.file.index,
       behaviorHints: {
         videoSize: torrentOrNzb.file.size,

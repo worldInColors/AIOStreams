@@ -126,6 +126,31 @@ export class TorrentGrabber {
     }
   }
 
+  /**
+   * Eager variant for resolve time: waits for the (single-flighted) fetch
+   * instead of returning undefined on a cold lazy cache.
+   */
+  static async getMetadataEager(
+    torrent: UnprocessedTorrent
+  ): Promise<TorrentMetadata | undefined> {
+    const url = torrent.downloadUrl;
+    if (!url) return undefined;
+    const key =
+      torrent.guid && torrent.indexer
+        ? `${torrent.indexer}:${torrent.guid}`
+        : url;
+    try {
+      return await this.#cache.fetch(key, () =>
+        this.#fetchLimit(() => this.#fetchMetadata(torrent))
+      );
+    } catch (error: any) {
+      logger.warn(
+        `Failed to fetch metadata for ${makeUrlLogSafe(url)}: ${error.message}`
+      );
+      return undefined;
+    }
+  }
+
   static async #fetchMetadata(
     torrent: UnprocessedTorrent,
     redirectCount: number = 0
