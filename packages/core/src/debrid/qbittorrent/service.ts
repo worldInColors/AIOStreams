@@ -48,6 +48,7 @@ import {
   openRegularFile,
   planFilePriorities,
   resolveAllowedPath,
+  resolveOnDiskVariant,
 } from './availability.js';
 import {
   getHeadSidecar,
@@ -305,6 +306,10 @@ export class QBittorrentService implements TorrentDebridService {
     // are private trackers and DHT-announcing their infohash is a ban
     // offense, so a provisional result is treated as private throughout.
     const provisional = playbackInfo.hashProvisional === true;
+    // The grabbed .torrent bytes, filled by the provisional grab below.
+    // Adding these directly saves qBittorrent fetching the passkey'd URL
+    // a second time through the indexer.
+    let grabbedTorrentB64: string | undefined;
     if (provisional && !playbackInfo.downloadUrl) {
       throw qbError(
         'STORE_MAGNET_INVALID',
@@ -335,6 +340,7 @@ export class QBittorrentService implements TorrentDebridService {
         );
       }
       hash = metadata.hash.toLowerCase();
+      grabbedTorrentB64 = metadata.torrentB64;
     }
 
     await DebridFailureCache.check(this.serviceName, 'torrent', hash);
@@ -396,10 +402,17 @@ export class QBittorrentService implements TorrentDebridService {
         playbackInfo.downloadUrl &&
         (appConfig.builtins.debrid.useTorrentDownloadUrl || provisional)
       ) {
-        logger.debug(
-          `Adding torrent from ${makeUrlLogSafe(playbackInfo.downloadUrl)}`
-        );
-        await addTorrent(playbackInfo.downloadUrl);
+        // The grab already downloaded the bytes, hand them over instead of
+        // making qBittorrent fetch the passkey'd URL again.
+        const added =
+          grabbedTorrentB64 !== undefined &&
+          (await this.addGrabbedTorrent(grabbedTorrentB64, signal));
+        if (!added) {
+          logger.debug(
+            `Adding torrent from ${makeUrlLogSafe(playbackInfo.downloadUrl)}`
+          );
+          await addTorrent(playbackInfo.downloadUrl);
+        }
       } else if (provisional) {
         // No URL add available and a provisional hash must never become a
         // DHT-announced magnet.
@@ -457,6 +470,26 @@ export class QBittorrentService implements TorrentDebridService {
     return `${appConfig.bootstrap.baseUrl}/api/v1/qbittorrent/stream/${encodeURIComponent(
       token
     )}/${encodeURIComponent(displayName)}`;
+  }
+
+  /**
+   * Add the .torrent bytes the grab already downloaded, through a temp file
+   * so the multipart add path is reused as-is.
+   */
+  private async addGrabbedTorrent(
+    torrentB64: string,
+    signal?: AbortSignal
+  ): Promise<boolean> {
+    const workDir = mkdtempSync(join(tmpdir(), 'aiostreams-add-'));
+    const path = join(workDir, 'grab.torrent');
+    try {
+      writeFileSync(path, Buffer.from(torrentB64, 'base64'));
+      return await this.client.addTorrentFile(path, signal);
+    } catch {
+      return false;
+    } finally {
+      rmSync(workDir, { recursive: true, force: true });
+    }
   }
 
   private async waitForTorrent(
@@ -666,8 +699,16 @@ export class QBittorrentService implements TorrentDebridService {
           let dataReady =
             availability.complete ||
             availability.contiguousFrom(0) >= threshold;
-          // Piece states flip before flush, verify bytes are readable.
-          const flushed = await this.hasFlushedHead(filePath, file.size);
+          // Both the flush probe and the disk frontier run on the real
+          // on-disk path (the .!qB variant, symlinks), the reported path
+          // alone can name a file that never opens.
+          const onDisk = await resolveOnDiskVariant(filePath);
+          const flushed = onDisk
+            ? await this.hasFlushedHead(onDisk, file.size)
+            : false;
+          const diskFrontier = onDisk
+            ? await diskContiguousBytes(onDisk, 0, threshold + 64 * 1024)
+            : 0;
           // The export-mode fetch announces the torrent from a second
           // peer, never do that for private torrents (whitelists and
           // double-announce rules punish exactly that).
@@ -692,11 +733,9 @@ export class QBittorrentService implements TorrentDebridService {
               return { file, filePath };
             }
           }
-          if (!dataReady && flushed) {
+          if (!dataReady && flushed && diskFrontier >= threshold) {
             // pieceStates lags on busy clients, trust the bytes.
-            dataReady =
-              (await diskContiguousBytes(filePath, 0, threshold + 64 * 1024)) >=
-              threshold;
+            dataReady = true;
           }
           if (dataReady && flushed) {
             return { file, filePath };
@@ -725,6 +764,7 @@ export class QBittorrentService implements TorrentDebridService {
               state: current.state,
               downloaded: Math.round(current.progress * current.size),
               contiguous: availability.contiguousFrom(0),
+              diskFrontier,
               threshold,
               flushed,
               attempt,
@@ -1260,21 +1300,14 @@ export class QBittorrentService implements TorrentDebridService {
    * were flushed (a container header is never all zeros).
    */
   private async hasFlushedHead(
-    filePath: string,
+    onDiskPath: string,
     fileSize: number
   ): Promise<boolean> {
     if (fileSize === 0) return true;
     const length = Math.min(64 * 1024, fileSize);
-    // Non-blocking regular-file opens only, on paths that pass the roots
-    // check (the .!qB variant too, qBittorrent's "Append .!qB to incomplete
-    // files" keeps the suffixed name on disk until the file completes).
-    let handle: Awaited<ReturnType<typeof openRegularFile>> = undefined;
-    for (const variant of [filePath, filePath + '.!qB']) {
-      const allowed = await resolveAllowedPath(variant);
-      if (allowed.status !== 'allowed') continue;
-      handle = await openRegularFile(allowed.realPath!);
-      if (handle) break;
-    }
+    // Takes the already resolved on-disk path (resolveOnDiskVariant follows
+    // the .!qB variant and symlinks through the confinement check).
+    const handle = await openRegularFile(onDiskPath);
     if (!handle) return false;
     try {
       const buffer = Buffer.alloc(length);

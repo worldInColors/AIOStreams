@@ -19,6 +19,10 @@ interface TorrentMetadata {
   files: DebridFile[];
   sources: string[];
   private?: boolean;
+  /** The raw .torrent bytes (base64), when the grab downloaded the file
+   * itself. Lets callers hand qBittorrent the bytes instead of having it
+   * fetch the passkey'd URL a second time. */
+  torrentB64?: string;
 }
 
 /**
@@ -234,6 +238,7 @@ export class TorrentGrabber {
         ),
         sources,
         private: !!parsedTorrent.info?.private,
+        torrentB64: Buffer.from(bytes).toString('base64'),
       };
     } else {
       throw new Error(

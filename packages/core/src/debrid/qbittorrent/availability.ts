@@ -29,6 +29,25 @@ export function applyPathMappings(
 
 export type AllowedPath = 'allowed' | 'missing' | 'invalid' | 'outside';
 
+/**
+ * The real on-disk path of a downloading file, following the `.!qB` variant
+ * and symlinks through the confinement check. Both the flush probe and the
+ * disk frontier scan must use THIS path, scanning the raw reported path
+ * silently returns nothing whenever the variant or a symlink is involved.
+ */
+export async function resolveOnDiskVariant(
+  filePath: string
+): Promise<string | undefined> {
+  const variants = filePath.endsWith('.!qB')
+    ? [filePath]
+    : [filePath, filePath + '.!qB'];
+  for (const variant of variants) {
+    const allowed = await resolveAllowedPath(variant);
+    if (allowed.status === 'allowed') return allowed.realPath;
+  }
+  return undefined;
+}
+
 /** Scan forward until the first all-zero 64KiB chunk, that's where
  * written data ends in a pre-allocated file. Compressed video never
  * has an all-zero chunk, so this is reliable. */
