@@ -1,5 +1,9 @@
 import z from 'zod';
 import { readFile } from 'node:fs/promises';
+// The undici-package FormData, not the global one. makeRequest posts
+// through the package fetch, a global form is a different class
+// instance to it and goes out malformed, qB answers 400.
+import { FormData } from 'undici';
 import { DebridError } from '../base.js';
 import {
   createLogger,
@@ -366,8 +370,7 @@ export class QBittorrentClient {
           ? AbortSignal.any([options.signal, AbortSignal.timeout(30_000)])
           : undefined,
         headers,
-        // The global FormData and undici-types FormData differ in type only.
-        body: (isFormData ? options.body : options.body?.toString()) as unknown as never,
+        body: isFormData ? options.body : options.body?.toString(),
         ignoreRecursion: true,
       });
     };
