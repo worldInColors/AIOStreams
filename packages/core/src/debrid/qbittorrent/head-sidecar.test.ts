@@ -40,8 +40,15 @@ function sidecarFile(tag: string): string {
 test('head sidecar registry serves and refreshes an entry', () => {
   const child = fakeChild();
   const file = sidecarFile('get');
-  registerHeadSidecar({ hash: 'a'.repeat(40), fileIndex: 0, file, bytes: 42, child });
-  const sidecar = getHeadSidecar('a'.repeat(40), 0);
+  registerHeadSidecar({
+    hash: 'a'.repeat(40),
+    fileIndex: 0,
+    file,
+    bytes: 42,
+    fileSize: 42,
+    child,
+  });
+  const sidecar = getHeadSidecar('a'.repeat(40), 0, 42);
   assert.equal(sidecar?.file, file);
   assert.equal(sidecar?.bytes, 42);
   child.kill('SIGKILL');
@@ -55,6 +62,7 @@ test('replacing a sidecar reaps the previous child and directory', () => {
     fileIndex: 0,
     file: firstFile,
     bytes: 10,
+    fileSize: 10,
     child: first,
   });
   const second = fakeChild();
@@ -64,11 +72,12 @@ test('replacing a sidecar reaps the previous child and directory', () => {
     fileIndex: 0,
     file: secondFile,
     bytes: 20,
+    fileSize: 20,
     child: second,
   });
   assert.ok(first.killedWith.includes('SIGTERM'));
   assert.ok(!existsSync(firstFile), 'replaced sidecar dir removed');
-  assert.equal(getHeadSidecar('b'.repeat(40), 0)?.file, secondFile);
+  assert.equal(getHeadSidecar('b'.repeat(40), 0, 20)?.file, secondFile);
   second.kill('SIGKILL');
 });
 
@@ -80,11 +89,12 @@ test('the sweeper reaps idle sidescars and their directories', () => {
     fileIndex: 0,
     file,
     bytes: 5,
+    fileSize: 5,
     child,
     ttlMs: 0,
   });
   sweepHeadSidecars();
   assert.ok(child.killedWith.includes('SIGTERM'));
   assert.ok(!existsSync(file), 'expired sidecar dir removed');
-  assert.equal(getHeadSidecar('c'.repeat(40), 0), undefined);
+  assert.equal(getHeadSidecar('c'.repeat(40), 0, 5), undefined);
 });

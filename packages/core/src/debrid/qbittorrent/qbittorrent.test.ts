@@ -862,7 +862,7 @@ describe('QBittorrentService resolve', () => {
   });
 
   test('a provisional hash resolves through the grabbed torrent hash', async (t) => {
-    const realHash = hashOf('7');
+    const realHash = hashOf('11');
     const pseudoHash = hashOf('p');
     const contentPath = makeContent(t, [{ name: 'video.mkv', size: 2000 }]);
     const original = TorrentGrabber.getMetadataEager;
@@ -897,6 +897,44 @@ describe('QBittorrentService resolve', () => {
       true
     );
     assert.match(link ?? '', /\/api\/v1\/qbittorrent\/stream\//);
+  });
+
+  test('a provisional hash missing from qBittorrent adds by URL, never a magnet', async (t) => {
+    const realHash = hashOf('12');
+    let addBody = '';
+    const original = TorrentGrabber.getMetadataEager;
+    TorrentGrabber.getMetadataEager = async () => ({
+      hash: realHash,
+      files: [],
+      sources: [],
+    });
+    t.after(() => {
+      TorrentGrabber.getMetadataEager = original;
+    });
+    await withMockedWebUi(t, {
+      login: true,
+      onAdd: (body) => (addBody = body),
+      intercepts: [
+        { path: `/api/v2/torrents/info?hashes=${realHash}`, body: [] },
+      ],
+    });
+    // cacheAndPlay off returns after the add, no readable wait needed.
+    const link = await service().resolve(
+      {
+        type: 'torrent',
+        hash: hashOf('p'),
+        hashProvisional: true,
+        downloadUrl: 'http://indexer.example/download?key=pass',
+        title: 'Some Release 1080p',
+        sources: [],
+        fileIndex: 0,
+      },
+      'video.mkv',
+      false
+    );
+    assert.equal(link, undefined);
+    assert.match(addBody, /urls=http%3A%2F%2Findexer\.example/);
+    assert.doesNotMatch(addBody, /magnet/);
   });
 
   test('a provisional hash whose grab fails refuses instead of magneting', async (t) => {

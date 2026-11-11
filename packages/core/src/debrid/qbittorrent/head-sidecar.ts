@@ -14,7 +14,7 @@ const SIDECAR_IDLE_MS = 10 * 60 * 1000;
 const SWEEP_INTERVAL_MS = 30_000;
 
 /** The head fetcher command, overridable for another interpreter or tests. */
-const FETCHER_COMMAND = process.env.QBITTORRENT_HEAD_FETCHER || 'python3';
+export const FETCHER_COMMAND = process.env.QBITTORRENT_HEAD_FETCHER || 'python3';
 
 let fetcherProbe: Promise<boolean> | undefined;
 

@@ -285,8 +285,14 @@ export abstract class BaseDebridAddon<T extends BaseDebridConfig> {
           hashProvisional: true,
         } as Torrent);
         // Warm the grab cache in the background so later searches see the
-        // real hash. The grabber single-flights and limits itself.
-        TorrentGrabber.getMetadata(torrent).catch(() => {});
+        // real hash. Keyed on the plain url (no guid/indexer) so the
+        // resolve-time eager grab shares the entry. The grabber
+        // single-flights and limits itself.
+        TorrentGrabber.getMetadata({
+          ...torrent,
+          guid: undefined,
+          indexer: undefined,
+        }).catch(() => {});
       }
       this.logger.info(
         `Passed ${provisionalTorrents.length} hashless torrents to qbittorrent by URL`

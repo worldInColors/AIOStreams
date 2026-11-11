@@ -51,6 +51,7 @@ import {
 } from './availability.js';
 import {
   getHeadSidecar,
+  FETCHER_COMMAND,
   headFetcherAvailable,
   headSidecarDir,
   registerHeadSidecar,
@@ -321,7 +322,12 @@ export class QBittorrentService implements TorrentDebridService {
         );
       }
       hash = metadata.hash.toLowerCase();
-      privateTorrent = privateTorrent || metadata.private === true;
+      // Provisional results come from tracker .torrent URLs. Announce them
+      // only through qBittorrent itself: DHT-announcing their infohash from
+      // anywhere else (the magnet-first fetcher, a fallback magnet) is a ban
+      // offense, so every provisional result is treated as private no
+      // matter what the info dict says.
+      privateTorrent = true;
     }
     // One wall-clock budget shared by both wait loops.
     const deadline = Date.now() + this.options.maxWaitTime;
@@ -876,7 +882,7 @@ export class QBittorrentService implements TorrentDebridService {
       const budgetMs = Math.max(5_000, Math.min(40_000, deadline - Date.now()));
       let child: ReturnType<typeof spawn>;
       try {
-        child = spawn('python3', [
+        child = spawn(FETCHER_COMMAND, [
           scriptPath,
           buildMagnet(playbackInfo, hash),
           '',
@@ -1120,7 +1126,7 @@ export class QBittorrentService implements TorrentDebridService {
       const endpoint = await this.client
         .getPeerEndpoint(signal)
         .catch(() => undefined);
-      const child = spawn('python3', [
+      const child = spawn(FETCHER_COMMAND, [
         scriptPath,
         torrentPath,
         String(selected.index),
