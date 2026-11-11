@@ -515,7 +515,7 @@ export abstract class BaseDebridAddon<T extends BaseDebridConfig> {
     const streamServiceIds = results.map((result) => result.service?.id);
     // Flush fileInfo store so all playback URLs are resolvable before any
     // preload/precache ping hits the /playback/ route.
-    await fileInfoStore()?.flush();
+    await fileInfoStore(true)?.flush();
 
     const proxied = await this._applyServiceProxying(
       resultStreams,

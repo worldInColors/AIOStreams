@@ -571,7 +571,7 @@ async function buildDebridStreams(
     }
   }
 
-  await fileInfoStore()?.flush();
+  await fileInfoStore(true)?.flush();
 
   return debridStreams;
 }

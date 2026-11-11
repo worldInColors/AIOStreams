@@ -8,6 +8,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { getGlobalDispatcher, MockAgent, setGlobalDispatcher } from 'undici';
 import { settingsStore } from '../../config/index.js';
+import { closeDb, initDb } from '../../db/db.js';
 import { SettingsRepository } from '../../db/repositories/settings.js';
 import { FeatureControl } from '../../utils/feature.js';
 import { makeRequest } from '../../utils/index.js';
@@ -15,6 +16,7 @@ import { TorrentGrabber } from '../../utils/torrent.js';
 import { getEnvironmentServiceDetails } from '../../utils/config.js';
 import { toUrlSafeBase64 } from '../../utils/general.js';
 import { DebridError, PlaybackInfo } from '../base.js';
+import { fileInfoStore, generatePlaybackUrl } from '../utils.js';
 import {
   parseQbittorrentCredential,
   QBittorrentClient,
@@ -1633,5 +1635,59 @@ describe('multipart adds over a real socket', () => {
     const body = add.body.toString('utf8');
     assert.ok(body.includes('openai_base_url'));
     assert.ok(body.includes('test-model'));
+  });
+});
+
+describe('generatePlaybackUrl passkey handling', () => {
+  test('stores downloadUrl payloads whatever their size', async (t) => {
+    mock.method(SettingsRepository, 'getAll', async () => []);
+    mock.method(SettingsRepository, 'getVersion', async () => 0);
+    await settingsStore.initialise();
+    t.after(() => mock.restoreAll());
+    // The forced store falls back to SQL without Redis, give it a DB.
+    const dbDir = mkdtempSync(join(tmpdir(), 'aiostreams-fis-'));
+    await initDb(`sqlite:${join(dbDir, 'fis.db')}`);
+    t.after(() => {
+      closeDb();
+      rmSync(dbDir, { recursive: true, force: true });
+    });
+    const fileInfo = {
+      type: 'torrent' as const,
+      hash: 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0',
+      hashProvisional: true,
+      downloadUrl: 'http://indexer.example/download?key=pass',
+      title: 'Some Release 1080p',
+      sources: [],
+      index: 0,
+    };
+    const url = generatePlaybackUrl('auth-token', 'tt123', fileInfo, 'x.mkv');
+    const segment = url.split('/debrid/playback/')[1].split('/')[2];
+    // The URL must not carry the decodable payload.
+    let decoded = '';
+    try {
+      decoded = Buffer.from(
+        segment.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (segment.length % 4)) % 4),
+        'base64'
+      ).toString('utf8');
+    } catch {
+      decoded = '';
+    }
+    assert.doesNotMatch(decoded, /downloadUrl|indexer\.example/);
+    await fileInfoStore(true)?.flush();
+    const stored = await fileInfoStore(true)?.get(segment);
+    assert.equal(stored?.downloadUrl, fileInfo.downloadUrl);
+    // A payload without a download URL still travels inline when small.
+    const plain = generatePlaybackUrl(
+      'auth-token',
+      'tt123',
+      { type: 'torrent', hash: 'b1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0', sources: [], index: 0 },
+      'x.mkv'
+    );
+    const plainSegment = plain.split('/debrid/playback/')[1].split('/')[2];
+    const plainDecoded = Buffer.from(
+      plainSegment.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (plainSegment.length % 4)) % 4),
+      'base64'
+    ).toString('utf8');
+    assert.match(plainDecoded, /"type":"torrent"/);
   });
 });

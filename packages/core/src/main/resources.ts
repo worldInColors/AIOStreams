@@ -608,8 +608,11 @@ async function precacheNextEpisode(
   }
 
   const singleStreamOnly = ctx.userData.precacheSingleStream !== false;
+  // A qBittorrent ping is a full resolve, it would add and announce a
+  // torrent nobody chose to play. Only a click may add one.
   const streamsToCache = selectedStreams
     .filter((s) => s.url)
+    .filter((s) => s.service?.id !== constants.QBITTORRENT_SERVICE)
     .slice(0, singleStreamOnly ? 1 : appConfig.userLimits.maxBackgroundPings);
 
   if (streamsToCache.length === 0) {
@@ -925,6 +928,10 @@ export async function getStreams(
           await streamSelector.select(finalStreams, preloadSelector)
         )
           .filter((s) => s.url)
+          // A qBittorrent ping is a full resolve, it would add and
+          // announce a torrent nobody chose to play. Only a click may
+          // add one.
+          .filter((s) => s.service?.id !== constants.QBITTORRENT_SERVICE)
           .slice(
             0,
             preloadSingleStream ? 1 : appConfig.userLimits.maxBackgroundPings

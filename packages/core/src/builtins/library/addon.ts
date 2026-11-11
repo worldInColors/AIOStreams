@@ -321,7 +321,7 @@ export class LibraryAddon extends BaseDebridAddon<LibraryAddonConfig> {
       createLibraryStream(item, service, narrowedItemType, fileIndex, file),
     ];
 
-    await fileInfoStore()?.flush();
+    await fileInfoStore(true)?.flush();
 
     const proxied = await this._applyServiceProxying(streams, [service.id]);
 
@@ -491,7 +491,7 @@ export class LibraryAddon extends BaseDebridAddon<LibraryAddonConfig> {
 
     // Flush fileInfo store so all playback URLs are resolvable before any
     // preload/precache ping hits the /playback/ route.
-    await fileInfoStore()?.flush();
+    await fileInfoStore(true)?.flush();
 
     // Add refresh stream action if configured
     const showRefresh = this.userData.showRefreshActions ?? ['catalog'];

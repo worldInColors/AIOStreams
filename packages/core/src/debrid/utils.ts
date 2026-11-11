@@ -1036,15 +1036,15 @@ export const metadataStore = () => {
   return Cache.getInstance<string, TitleMetadata>(prefix, 1_000_000_000, store);
 };
 
-export const fileInfoStore = () => {
+export const fileInfoStore = (force = false) => {
   const prefix = 'fis';
-  let store: 'redis' | 'sql' | 'memory' | undefined;
-  if (appConfig.builtins.debrid.fileinfoStore === true) {
+  const configured = appConfig.builtins.debrid.fileinfoStore;
+  if (!configured && !force) return undefined;
+  let store: 'redis' | 'sql' | 'memory';
+  if (configured === true || !configured) {
     store = appConfig.bootstrap.redisUri ? 'redis' : 'sql';
-  } else if (!appConfig.builtins.debrid.fileinfoStore) {
-    return undefined;
   } else {
-    store = appConfig.builtins.debrid.fileinfoStore;
+    store = configured;
   }
   return Cache.getInstance<string, FileInfo>(prefix, 1_000_000_000, store);
 };
@@ -1076,9 +1076,13 @@ export function generatePlaybackUrl(
   fileInfo: FileInfo,
   filename?: string
 ): string {
-  const fileInfoCache = fileInfoStore();
+  // A torrent result with a download URL carries the indexer passkey in
+  // its payload, that never belongs in a URL whatever the size, so the
+  // store is forced on for those.
+  const forceStore = fileInfo.type === 'torrent' && !!fileInfo.downloadUrl;
+  const fileInfoCache = fileInfoStore(forceStore);
   let fileInfoStr: string = toUrlSafeBase64(JSON.stringify(fileInfo));
-  if (fileInfoCache && fileInfoStr.length > 500) {
+  if (fileInfoCache && (fileInfoStr.length > 500 || forceStore)) {
     fileInfoStr = getSimpleTextHash(JSON.stringify(fileInfo));
     fileInfoCache.set(
       fileInfoStr,

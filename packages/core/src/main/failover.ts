@@ -40,7 +40,9 @@ export async function decodeFileInfo(
   try {
     return FileInfoSchema.parse(JSON.parse(fromUrlSafeBase64(fileInfoRaw)));
   } catch {
-    return fileInfoStore()?.get(fileInfoRaw);
+    // Forced like the encode side, downloadUrl payloads are stored even
+    // when the fileinfo store is not configured.
+    return fileInfoStore(true)?.get(fileInfoRaw);
   }
 }
 
