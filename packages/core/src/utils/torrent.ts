@@ -128,7 +128,9 @@ export class TorrentGrabber {
 
   /**
    * Eager variant for resolve time: waits for the (single-flighted) fetch
-   * instead of returning undefined on a cold lazy cache.
+   * instead of returning undefined on a cold lazy cache. Deliberately NOT
+   * run through the shared fetch limiter, a resolve must not queue behind
+   * the background search-time warm grabs.
    */
   static async getMetadataEager(
     torrent: UnprocessedTorrent
@@ -140,9 +142,7 @@ export class TorrentGrabber {
         ? `${torrent.indexer}:${torrent.guid}`
         : url;
     try {
-      return await this.#cache.fetch(key, () =>
-        this.#fetchLimit(() => this.#fetchMetadata(torrent))
-      );
+      return await this.#cache.fetch(key, () => this.#fetchMetadata(torrent));
     } catch (error: any) {
       logger.warn(
         `Failed to fetch metadata for ${makeUrlLogSafe(url)}: ${error.message}`
